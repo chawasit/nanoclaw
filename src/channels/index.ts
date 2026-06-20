@@ -7,3 +7,6 @@
 // self-registration import below.
 
 import './cli.js';
+
+// telegram (added by add-telegram)
+import './telegram.js';
