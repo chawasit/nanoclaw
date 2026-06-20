@@ -6,6 +6,7 @@ import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { registerProvider } from './provider-registry.js';
+import { formatMcpServerStatus } from './mcp-status.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
 function log(msg: string): void {
@@ -438,6 +439,13 @@ export class ClaudeProvider implements AgentProvider {
         yield { type: 'activity' };
 
         if (message.type === 'system' && message.subtype === 'init') {
+          const mcp = formatMcpServerStatus(message);
+          if (mcp) {
+            log(mcp.line);
+            if (mcp.unhealthy.length > 0) {
+              log(`WARNING: MCP server(s) not connected: ${mcp.unhealthy.join(', ')}`);
+            }
+          }
           yield { type: 'init', continuation: message.session_id };
         } else if (message.type === 'result') {
           // `result` text exists only on subtype:"success"; error subtypes
