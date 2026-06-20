@@ -22,6 +22,7 @@ import { wakeContainer } from '../../container-runner.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { applyBaseProfile } from '../../base-profile.js';
 import { seedPersonality } from '../../personality.js';
+import { renderRoleBrief, validateRoleBrief } from '../../role-brief.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { AgentGroup, Session } from '../../types.js';
@@ -60,7 +61,21 @@ function notifyAgent(session: Session, text: string): void {
  */
 export async function handleCreateAgent(content: Record<string, unknown>, session: Session): Promise<void> {
   const name = typeof content.name === 'string' ? content.name : '';
-  const instructions = typeof content.instructions === 'string' ? content.instructions : null;
+  let instructions = typeof content.instructions === 'string' ? content.instructions : null;
+  // Optional structured role brief (qa-report/0002 #7): validate, then render it into
+  // `instructions` so the mandate lands ABOVE the working-style block via the normal seed.
+  if (content.roleBrief != null) {
+    if (typeof content.roleBrief !== 'object') {
+      notifyAgent(session, 'create_agent failed: roleBrief must be an object.');
+      return;
+    }
+    const v = validateRoleBrief(content.roleBrief as Record<string, unknown>);
+    if (!v.ok) {
+      notifyAgent(session, 'create_agent failed: invalid roleBrief — ' + v.errors.join('; '));
+      return;
+    }
+    instructions = renderRoleBrief(v.brief!) + (instructions ?? '');
+  }
 
   if (!name) {
     notifyAgent(session, 'create_agent failed: name is required.');
