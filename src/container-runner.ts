@@ -489,6 +489,23 @@ async function buildContainerArgs(
   }
   log.info('OneCLI gateway applied', { containerName });
 
+  // Per-agent-group env overrides — applied AFTER OneCLI so they win over the
+  // gateway's proxy vars (docker resolves duplicate -e by last-wins). Lets an
+  // Ollama worker set ANTHROPIC_BASE_URL + NO_PROXY to reach a LAN LLM directly.
+  if (containerConfig.env) {
+    for (const [key, value] of Object.entries(containerConfig.env)) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
+  // Blocked hosts: pin to 0.0.0.0 so they are unreachable from the container
+  // (e.g. block api.anthropic.com on a local-only worker to prevent spend).
+  if (containerConfig.blockedHosts) {
+    for (const host of containerConfig.blockedHosts) {
+      args.push('--add-host', `${host}:0.0.0.0`);
+    }
+  }
+
   // Override entrypoint: run v2 entry point directly via Bun (no tsc, no stdin).
   args.push('--entrypoint', 'bash');
 

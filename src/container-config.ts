@@ -35,6 +35,8 @@ export interface ContainerConfig {
   packages: { apt: string[]; npm: string[] };
   imageTag?: string;
   additionalMounts: AdditionalMountConfig[];
+  env?: Record<string, string>;
+  blockedHosts?: string[];
   skills: string[] | 'all';
   provider?: string;
   groupName?: string;
@@ -55,6 +57,8 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     },
     imageTag: row.image_tag ?? undefined,
     additionalMounts: JSON.parse(row.additional_mounts) as AdditionalMountConfig[],
+    env: JSON.parse(row.env) as Record<string, string>,
+    blockedHosts: JSON.parse(row.blocked_hosts) as string[],
     skills: JSON.parse(row.skills) as string[] | 'all',
     provider: row.provider ?? undefined,
     groupName: group.name,
