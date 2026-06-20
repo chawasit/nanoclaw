@@ -87,6 +87,34 @@ export function applyBaseProfile(agentGroupId: string): void {
     updateContainerConfigJson(agentGroupId, 'additional_mounts', mounts);
   }
 
+  // --- Local-LLM-only default (opt-in via NANOCLAW_LOCAL_LLM_ONLY) ---
+  // For test/sandbox instances: pin every new hire to a local Anthropic-compatible
+  // LLM endpoint (e.g. an Ollama/llama.cpp host) so spawns never spend on the cloud
+  // vault key. Sets the base-URL override + a dummy key + NO_PROXY for the endpoint
+  // host, and blocks api.anthropic.com. Additive/idempotent; never overrides an
+  // already-set base URL. Inert unless the flag is set (production never sets it).
+  if (process.env.NANOCLAW_LOCAL_LLM_ONLY) {
+    const baseUrl = process.env.NANOCLAW_LOCAL_BASE_URL || 'http://192.168.1.31:11434';
+    const llmHost = new URL(baseUrl).hostname;
+    const env = JSON.parse(row.env || '{}') as Record<string, string>;
+    if (!env.ANTHROPIC_BASE_URL) {
+      env.ANTHROPIC_BASE_URL = baseUrl;
+      env.ANTHROPIC_API_KEY = 'ollama';
+      const noProxy = new Set((env.NO_PROXY || '').split(',').filter(Boolean));
+      noProxy.add(llmHost);
+      env.NO_PROXY = [...noProxy].join(',');
+      env.no_proxy = env.NO_PROXY;
+      updateContainerConfigJson(agentGroupId, 'env', env);
+      applied.push('local-llm:env');
+    }
+    const blocked = JSON.parse(row.blocked_hosts || '[]') as string[];
+    if (!blocked.includes('api.anthropic.com')) {
+      blocked.push('api.anthropic.com');
+      updateContainerConfigJson(agentGroupId, 'blocked_hosts', blocked);
+      applied.push('local-llm:blocked');
+    }
+  }
+
   log.info('Applied base agent profile', {
     agentGroupId,
     applied: applied.length > 0 ? applied : 'nothing (keys absent or already set)',

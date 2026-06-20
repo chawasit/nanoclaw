@@ -21,11 +21,15 @@ beforeEach(() => {
   delete process.env.EXA_API_KEY;
   delete process.env.FIRECRAWL_API_KEY;
   delete process.env.COMPANY_VAULT_PATH;
+  delete process.env.NANOCLAW_LOCAL_LLM_ONLY;
+  delete process.env.NANOCLAW_LOCAL_BASE_URL;
 });
 afterEach(() => {
   delete process.env.EXA_API_KEY;
   delete process.env.FIRECRAWL_API_KEY;
   delete process.env.COMPANY_VAULT_PATH;
+  delete process.env.NANOCLAW_LOCAL_LLM_ONLY;
+  delete process.env.NANOCLAW_LOCAL_BASE_URL;
 });
 
 function updatesByCol() {
@@ -129,5 +133,46 @@ describe('applyBaseProfile', () => {
     mockGet.mockReturnValue(undefined);
     applyBaseProfile(ID);
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('pins a new hire to the local LLM when NANOCLAW_LOCAL_LLM_ONLY is set', () => {
+    process.env.NANOCLAW_LOCAL_LLM_ONLY = '1';
+    process.env.NANOCLAW_LOCAL_BASE_URL = 'http://10.0.0.9:11434';
+    mockGet.mockReturnValue({ mcp_servers: '{}', additional_mounts: '[]', env: '{}', blocked_hosts: '[]' });
+
+    applyBaseProfile(ID);
+
+    const u = updatesByCol();
+    const env = u.env as Record<string, string>;
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://10.0.0.9:11434');
+    expect(env.ANTHROPIC_API_KEY).toBe('ollama');
+    expect(env.NO_PROXY).toBe('10.0.0.9');
+    expect(env.no_proxy).toBe('10.0.0.9');
+    expect(u.blocked_hosts as string[]).toContain('api.anthropic.com');
+  });
+
+  it('does not touch the LLM env when the flag is unset', () => {
+    process.env.EXA_API_KEY = 'exa-key';
+    mockGet.mockReturnValue({ mcp_servers: '{}', additional_mounts: '[]', env: '{}', blocked_hosts: '[]' });
+
+    applyBaseProfile(ID);
+
+    expect(updatesByCol().env).toBeUndefined();
+    expect(updatesByCol().blocked_hosts).toBeUndefined();
+  });
+
+  it('local-llm default is idempotent and preserves an existing base URL', () => {
+    process.env.NANOCLAW_LOCAL_LLM_ONLY = '1';
+    mockGet.mockReturnValue({
+      mcp_servers: '{}',
+      additional_mounts: '[]',
+      env: JSON.stringify({ ANTHROPIC_BASE_URL: 'http://existing:1234', ANTHROPIC_API_KEY: 'keep' }),
+      blocked_hosts: JSON.stringify(['api.anthropic.com']),
+    });
+
+    applyBaseProfile(ID);
+
+    expect(updatesByCol().env).toBeUndefined();
+    expect(updatesByCol().blocked_hosts).toBeUndefined();
   });
 });
