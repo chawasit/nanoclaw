@@ -1,12 +1,15 @@
 /**
  * Base agent profile — applied ONCE at agent-group creation.
  *
- * Gives every new hire the §5.11 baseline research capability:
+ * Gives every new hire the §5.11 baseline:
  *   - Exa (web search) + Firecrawl (scrape) MCP servers, run via `npx -y`
  *     (ISOLATED dep trees — co-baking both via `pnpm install -g` dedupes zod to
  *     3.24.4 and crashes firecrawl on `zod/v3`; npx sidesteps it). dev-log/0015.
  *   - Read-only mount of the task-list board (data/tasklist) at
  *     /workspace/extra/tasklist, so the agent can `task_list`.
+ *   - Read-only mount of the SOP vault (COMPANY_VAULT_PATH) at /workspace/extra/sop
+ *     when configured — governance, since base-agent-contract requires consulting
+ *     SOPs (qa-report/0002 #5). Graceful: skipped if COMPANY_VAULT_PATH is unset.
  *
  * CREATE-ONLY: call from the creation path (create_agent / channel-approval),
  * NEVER from the spawn path (`container-runner.buildMounts`) — re-applying on
@@ -16,7 +19,7 @@
  *
  * Graceful: skips a server when its key is absent from the host env rather than
  * writing a dead empty-key config that fails at runtime. The host gets the keys
- * from a systemd EnvironmentFile (~/agent-tools.env).
+ * (and COMPANY_VAULT_PATH) from a systemd EnvironmentFile (~/agent-tools.env).
  */
 import path from 'path';
 
@@ -66,12 +69,22 @@ export function applyBaseProfile(agentGroupId: string): void {
     updateContainerConfigJson(agentGroupId, 'mcp_servers', mcp);
   }
 
-  // --- Task-list board (read-only mount) ---
+  // --- Read-only mounts: task board (always) + SOP vault (governance; qa-report/0002 #5) ---
   const mounts = JSON.parse(row.additional_mounts) as AdditionalMountConfig[];
-  if (!mounts.some((m) => m.containerPath === 'tasklist')) {
-    mounts.push({ hostPath: path.join(DATA_DIR, 'tasklist'), containerPath: 'tasklist', readonly: true });
+  let mountsChanged = false;
+  const ensureMount = (hostPath: string | undefined, containerPath: string): void => {
+    if (hostPath && !mounts.some((m) => m.containerPath === containerPath)) {
+      mounts.push({ hostPath, containerPath, readonly: true });
+      applied.push(`mount:${containerPath}`);
+      mountsChanged = true;
+    }
+  };
+  ensureMount(path.join(DATA_DIR, 'tasklist'), 'tasklist');
+  // SOP vault is governance, not discretionary (base-agent-contract requires it).
+  // Graceful: skipped if COMPANY_VAULT_PATH is unset, like the API keys.
+  ensureMount(process.env.COMPANY_VAULT_PATH, 'sop');
+  if (mountsChanged) {
     updateContainerConfigJson(agentGroupId, 'additional_mounts', mounts);
-    applied.push('mount:tasklist');
   }
 
   log.info('Applied base agent profile', {
