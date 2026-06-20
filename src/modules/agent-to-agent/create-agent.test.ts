@@ -16,6 +16,8 @@ const mockRequestApproval = vi.fn().mockResolvedValue(undefined);
 const mockGetContainerConfig = vi.fn();
 const mockCreateAgentGroup = vi.fn();
 const mockInitGroupFilesystem = vi.fn();
+const mockApplyBaseProfile = vi.fn();
+const mockSeedPersonality = vi.fn();
 const mockUpdateScalars = vi.fn();
 const mockWriteDestinations = vi.fn();
 const mockNotifyWrite = vi.fn();
@@ -35,6 +37,12 @@ vi.mock('../../db/agent-groups.js', () => ({
 }));
 vi.mock('../../group-init.js', () => ({
   initGroupFilesystem: (...a: unknown[]) => mockInitGroupFilesystem(...a),
+}));
+vi.mock('../../base-profile.js', () => ({
+  applyBaseProfile: (...a: unknown[]) => mockApplyBaseProfile(...a),
+}));
+vi.mock('../../personality.js', () => ({
+  seedPersonality: (...a: unknown[]) => mockSeedPersonality(...a),
 }));
 vi.mock('./write-destinations.js', () => ({
   writeDestinations: (...a: unknown[]) => mockWriteDestinations(...a),
