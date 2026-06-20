@@ -21,6 +21,7 @@ import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { applyBaseProfile } from '../../base-profile.js';
+import { seedPersonality } from '../../personality.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { AgentGroup, Session } from '../../types.js';
@@ -174,6 +175,7 @@ async function performCreateAgent(
   initGroupFilesystem(newGroup, { instructions: instructions ?? undefined, provider: parentProvider });
   // Base agent profile (search/scrape MCP + task board) — create-only.
   applyBaseProfile(newGroup.id);
+  seedPersonality(newGroup);
   if (parentProvider) {
     updateContainerConfigScalars(newGroup.id, { provider: parentProvider });
   }
