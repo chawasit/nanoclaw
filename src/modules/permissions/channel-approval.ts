@@ -51,6 +51,7 @@ import { getMessagingGroup, updateMessagingGroup } from '../../db/messaging-grou
 import { getDeliveryAdapter } from '../../delivery.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { applyBaseProfile } from '../../base-profile.js';
+import { seedPersonality } from '../../personality.js';
 import { log } from '../../log.js';
 import type { InboundEvent } from '../../channels/adapter.js';
 import type { AgentGroup } from '../../types.js';
@@ -297,5 +298,6 @@ export function createNewAgentGroup(name: string): AgentGroup {
   // operator flips a group with `ncl groups config update --provider`.
   initGroupFilesystem(ag);
   applyBaseProfile(ag.id);
+  seedPersonality(ag);
   return ag;
 }
