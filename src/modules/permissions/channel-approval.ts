@@ -50,6 +50,7 @@ import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
 import { getDeliveryAdapter } from '../../delivery.js';
 import { initGroupFilesystem } from '../../group-init.js';
+import { applyBaseProfile } from '../../base-profile.js';
 import { log } from '../../log.js';
 import type { InboundEvent } from '../../channels/adapter.js';
 import type { AgentGroup } from '../../types.js';
@@ -295,5 +296,6 @@ export function createNewAgentGroup(name: string): AgentGroup {
   // Channel-approved groups get the built-in default provider (claude); the
   // operator flips a group with `ncl groups config update --provider`.
   initGroupFilesystem(ag);
+  applyBaseProfile(ag.id);
   return ag;
 }
