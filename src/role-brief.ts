@@ -1,22 +1,15 @@
 /**
- * Role brief — the structured MANDATE seeded into a new hire's CLAUDE.local.md.
+ * Role brief — the structured MANDATE for a new hire (qa-report/0002 #7).
  *
- * Two-part identity: the role brief (what the agent is FOR — deliberate, manager-
- * authored) sits ABOVE the sampled working-style block (how it tends to work).
- * The brief, the SOPs, and the safety guardrails always override style
- * (qa-report/0002 #7).
+ * Pure helpers only:
+ *   - validateRoleBrief enforces the template (required reportsTo/mandate/doneWhen
+ *     + optional toolLimits/statusExpectation).
+ *   - renderRoleBrief produces the markdown block, ending in a precedence line.
  *
- * Pure `validateRoleBrief` / `renderRoleBrief` + a create-only, marker-guarded
- * `seedRoleBrief` (mirrors personality.ts). Call at creation BEFORE seedPersonality
- * so the mandate lands above the style block.
+ * create_agent renders a valid brief into the new agent[39m\[39ms `instructions`, so it lands
+ * ABOVE the sampled working-style block via the normal CLAUDE.local.md seed —
+ * provider-agnostic, no direct file writes here.
  */
-import fs from 'fs';
-import path from 'path';
-
-import { GROUPS_DIR } from './config.js';
-import { log } from './log.js';
-import type { AgentGroup } from './types.js';
-
 export interface RoleBrief {
   reportsTo: string;
   mandate: string;
@@ -27,7 +20,7 @@ export interface RoleBrief {
 
 const REQUIRED = ['reportsTo', 'mandate', 'doneWhen'] as const;
 const OPTIONAL = ['toolLimits', 'statusExpectation'] as const;
-const MARKER = '<!-- role-brief -->';
+export const ROLE_BRIEF_MARKER = '<!-- role-brief -->';
 
 function nonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.trim().length > 0;
@@ -40,7 +33,7 @@ export function validateRoleBrief(input: Record<string, unknown>): {
 } {
   const errors: string[] = [];
   for (const k of REQUIRED) {
-    if (!nonEmptyString(input[k])) errors.push(`missing or empty required field: ${k}`);
+    if (!nonEmptyString(input[k])) errors.push('missing or empty required field: ' + k);
   }
   if (errors.length > 0) return { ok: false, errors };
 
@@ -57,36 +50,20 @@ export function validateRoleBrief(input: Record<string, unknown>): {
 
 export function renderRoleBrief(brief: RoleBrief): string {
   const lines = [
-    MARKER,
+    ROLE_BRIEF_MARKER,
     '## Role brief',
     '',
-    `- **Reports to:** ${brief.reportsTo}`,
-    `- **Mandate:** ${brief.mandate}`,
-    `- **Done when:** ${brief.doneWhen}`,
+    '- **Reports to:** ' + brief.reportsTo,
+    '- **Mandate:** ' + brief.mandate,
+    '- **Done when:** ' + brief.doneWhen,
   ];
-  if (brief.toolLimits) lines.push(`- **Tool limits:** ${brief.toolLimits}`);
-  if (brief.statusExpectation) lines.push(`- **Status expectation:** ${brief.statusExpectation}`);
+  if (brief.toolLimits) lines.push('- **Tool limits:** ' + brief.toolLimits);
+  if (brief.statusExpectation) lines.push('- **Status expectation:** ' + brief.statusExpectation);
   lines.push(
     '',
-    'This is your mandate. It — together with the SOPs and the safety guardrails in the',
+    'This is your mandate. It — with the SOPs and the safety guardrails in the',
     'base-agent-contract — **overrides** your working style. When in doubt, serve the mandate.',
     '',
   );
   return lines.join('\n');
-}
-
-export function seedRoleBrief(group: AgentGroup, brief: RoleBrief): void {
-  const file = path.resolve(GROUPS_DIR, group.folder, 'CLAUDE.local.md');
-  let existing = '';
-  try {
-    existing = fs.readFileSync(file, 'utf-8');
-  } catch {
-    // CLAUDE.local.md not created yet — seed fresh.
-  }
-  if (existing.includes(MARKER)) return; // create-only — never re-render
-
-  const prefix = existing.trimEnd().length > 0 ? existing.trimEnd() + '\n\n' : '';
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, prefix + renderRoleBrief(brief) + '\n');
-  log.info('Seeded role brief', { agentGroupId: group.id, reportsTo: brief.reportsTo });
 }

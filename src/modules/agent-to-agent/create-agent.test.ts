@@ -86,6 +86,39 @@ describe('handleCreateAgent — scope-based authorization', () => {
     expect(mockInitGroupFilesystem).toHaveBeenCalledTimes(1);
   });
 
+  it('renders a valid roleBrief into the child instructions, above the original', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    await handleCreateAgent(
+      {
+        name: 'Scout',
+        instructions: 'help',
+        roleBrief: { reportsTo: 'MD', mandate: 'scout the web', doneWhen: 'report filed' },
+      },
+      SESSION,
+    );
+    const opts = mockInitGroupFilesystem.mock.calls[0][1] as { instructions: string };
+    expect(opts.instructions).toContain('<!-- role-brief -->');
+    expect(opts.instructions).toContain('scout the web');
+    expect(opts.instructions).toContain('help');
+    expect(opts.instructions.indexOf('role-brief')).toBeLessThan(opts.instructions.indexOf('help'));
+  });
+
+  it('rejects an invalid roleBrief without creating the agent', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    await handleCreateAgent({ name: 'Scout', roleBrief: { reportsTo: 'MD' } }, SESSION);
+    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+    expect(mockInitGroupFilesystem).not.toHaveBeenCalled();
+  });
+
+  it('carries the rendered brief through the approval payload (group scope)', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+    await handleCreateAgent({ name: 'Scout', roleBrief: { reportsTo: 'MD', mandate: 'm', doneWhen: 'd' } }, SESSION);
+    expect(mockRequestApproval).toHaveBeenCalledTimes(1);
+    expect(
+      (mockRequestApproval.mock.calls[0][0] as { payload: { instructions: string } }).payload.instructions,
+    ).toContain('<!-- role-brief -->');
+  });
+
   it('child inherits the creator provider (codex parent → codex child)', async () => {
     // A subagent must run on the same authenticated runtime as its creator —
     // on a codex-only install a claude default would 401. Red-on-delete:

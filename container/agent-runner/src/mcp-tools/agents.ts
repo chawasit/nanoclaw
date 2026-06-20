@@ -41,6 +41,18 @@ export const createAgent: McpToolDefinition = {
       properties: {
         name: { type: 'string', description: 'Human-readable name (also becomes your destination name for this agent)' },
         instructions: { type: 'string', description: 'CLAUDE.md content for the new agent (personality, role, instructions)' },
+        roleBrief: {
+          type: 'object',
+          description:
+            'Optional but recommended structured mandate; renders ABOVE the working-style block. Fields: reportsTo, mandate, doneWhen (required); toolLimits, statusExpectation (optional).',
+          properties: {
+            reportsTo: { type: 'string' },
+            mandate: { type: 'string' },
+            doneWhen: { type: 'string' },
+            toolLimits: { type: 'string' },
+            statusExpectation: { type: 'string' },
+          },
+        },
       },
       required: ['name'],
     },
@@ -58,6 +70,7 @@ export const createAgent: McpToolDefinition = {
         requestId,
         name,
         instructions: (args.instructions as string) || null,
+        roleBrief: (args.roleBrief as Record<string, unknown>) || null,
       }),
     });
 
