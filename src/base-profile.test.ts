@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGet = vi.fn();
 const mockUpdate = vi.fn();
+const mockMkdir = vi.fn();
 
 vi.mock('./db/container-configs.js', () => ({
   getContainerConfig: (id: string) => mockGet(id),
@@ -9,6 +10,7 @@ vi.mock('./db/container-configs.js', () => ({
 }));
 vi.mock('./config.js', () => ({ DATA_DIR: '/srv/nanoclaw/data' }));
 vi.mock('./log.js', () => ({ log: { info: vi.fn(), warn: vi.fn() } }));
+vi.mock('fs', () => ({ default: { mkdirSync: (...a: unknown[]) => mockMkdir(...a) } }));
 
 import { applyBaseProfile } from './base-profile.js';
 
@@ -18,9 +20,11 @@ const ID = 'ag-test-1';
 beforeEach(() => {
   mockGet.mockReset();
   mockUpdate.mockReset();
+  mockMkdir.mockReset();
   delete process.env.EXA_API_KEY;
   delete process.env.FIRECRAWL_API_KEY;
   delete process.env.COMPANY_VAULT_PATH;
+  delete process.env.COMPANY_NAS_PATH;
   delete process.env.NANOCLAW_LOCAL_LLM_ONLY;
   delete process.env.NANOCLAW_LOCAL_BASE_URL;
 });
@@ -28,6 +32,7 @@ afterEach(() => {
   delete process.env.EXA_API_KEY;
   delete process.env.FIRECRAWL_API_KEY;
   delete process.env.COMPANY_VAULT_PATH;
+  delete process.env.COMPANY_NAS_PATH;
   delete process.env.NANOCLAW_LOCAL_LLM_ONLY;
   delete process.env.NANOCLAW_LOCAL_BASE_URL;
 });
@@ -92,6 +97,51 @@ describe('applyBaseProfile', () => {
 
     const mounts = updatesByCol().additional_mounts as Mount[];
     expect(mounts.some((m) => m.containerPath === 'sop')).toBe(false);
+  });
+
+  it('adds NAS workspace mounts (vault RO, shared RW, own work RW) when COMPANY_NAS_PATH is set', () => {
+    process.env.COMPANY_NAS_PATH = '/srv/company-nas';
+    mockGet.mockReturnValue(emptyRow());
+
+    applyBaseProfile(ID);
+
+    const mounts = updatesByCol().additional_mounts as Mount[];
+    expect(mounts).toContainEqual({ hostPath: '/srv/company-nas/vault', containerPath: 'vault', readonly: true });
+    expect(mounts).toContainEqual({ hostPath: '/srv/company-nas/shared', containerPath: 'shared', readonly: false });
+    expect(mounts).toContainEqual({
+      hostPath: `/srv/company-nas/work/${ID}`,
+      containerPath: 'work',
+      readonly: false,
+    });
+    // the agent's own work dir must be pre-created so the spawn-time mount check passes
+    expect(mockMkdir).toHaveBeenCalledWith(`/srv/company-nas/work/${ID}`, { recursive: true });
+  });
+
+  it('skips NAS mounts gracefully when COMPANY_NAS_PATH is absent', () => {
+    mockGet.mockReturnValue(emptyRow());
+
+    applyBaseProfile(ID);
+
+    const mounts = updatesByCol().additional_mounts as Mount[];
+    expect(mounts.some((m) => ['vault', 'shared', 'work'].includes(m.containerPath))).toBe(false);
+    expect(mockMkdir).not.toHaveBeenCalled();
+  });
+
+  it('NAS mounts are idempotent — does not duplicate existing vault/shared/work', () => {
+    process.env.COMPANY_NAS_PATH = '/srv/company-nas';
+    mockGet.mockReturnValue({
+      mcp_servers: '{}',
+      additional_mounts: JSON.stringify([
+        { hostPath: '/old/vault', containerPath: 'vault', readonly: true },
+        { hostPath: '/old/shared', containerPath: 'shared', readonly: false },
+        { hostPath: `/old/work`, containerPath: 'work', readonly: false },
+        { hostPath: '/srv/nanoclaw/data/tasklist', containerPath: 'tasklist', readonly: true },
+      ]),
+    });
+
+    applyBaseProfile(ID);
+
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it('is idempotent — does not duplicate an existing server or mount', () => {
