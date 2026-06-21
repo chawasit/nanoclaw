@@ -21,6 +21,8 @@ const mockSeedPersonality = vi.fn();
 const mockUpdateScalars = vi.fn();
 const mockWriteDestinations = vi.fn();
 const mockNotifyWrite = vi.fn();
+const mockGetAllAgentGroups = vi.fn();
+const mockCountChildren = vi.fn();
 
 vi.mock('../approvals/index.js', () => ({
   requestApproval: (...a: unknown[]) => mockRequestApproval(...a),
@@ -34,6 +36,7 @@ vi.mock('../../db/agent-groups.js', () => ({
   getAgentGroup: (id: string) => ({ id, name: id.toUpperCase(), folder: id, agent_provider: null, created_at: '' }),
   getAgentGroupByFolder: () => undefined,
   createAgentGroup: (...a: unknown[]) => mockCreateAgentGroup(...a),
+  getAllAgentGroups: (...a: unknown[]) => mockGetAllAgentGroups(...a),
 }));
 vi.mock('../../group-init.js', () => ({
   initGroupFilesystem: (...a: unknown[]) => mockInitGroupFilesystem(...a),
@@ -51,6 +54,7 @@ vi.mock('./db/agent-destinations.js', () => ({
   getDestinationByName: () => undefined,
   createDestination: vi.fn(),
   normalizeName: (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+  countChildren: (...a: unknown[]) => mockCountChildren(...a),
 }));
 // notifyAgent writes to the session inbound.db + wakes the container; stub both.
 vi.mock('../../session-manager.js', () => ({
@@ -63,12 +67,15 @@ vi.mock('../../db/sessions.js', () => ({
   getSession: (id: string) => ({ id, agent_group_id: 'ag-1' }),
 }));
 
-import { handleCreateAgent } from './create-agent.js';
+import { handleCreateAgent, applyCreateAgent } from './create-agent.js';
 
 const SESSION = { id: 'sess-1', agent_group_id: 'ag-1' } as Session;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: well under both caps so existing scenarios proceed unchanged.
+  mockGetAllAgentGroups.mockReturnValue([]);
+  mockCountChildren.mockReturnValue(0);
 });
 
 afterEach(() => {
@@ -178,5 +185,40 @@ describe('handleCreateAgent — scope-based authorization', () => {
 
     expect(mockRequestApproval).not.toHaveBeenCalled();
     expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleCreateAgent — recruiting headcount caps (Path A slice 1)', () => {
+  it('default caps (env unset): a normal hire proceeds', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    // getAllAgentGroups → [] and countChildren → 0 by default (beforeEach)
+    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('global headcount cap: denies even a trusted global-scope creator, with no approval', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({})); // == DEFAULT_MAX_AGENTS
+    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
+    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockNotifyWrite).toHaveBeenCalled(); // told the agent why
+  });
+
+  it('direct-report cap: denies when the creator already has the max children', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    mockCountChildren.mockReturnValue(10); // == DEFAULT_MAX_DIRECT_REPORTS
+    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
+    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+  });
+
+  it('confined path is capped at CREATION (applyCreateAgent), not only at request time', async () => {
+    // The cap must hold even if the request slipped under at approval time and
+    // headcount filled up before the admin approved.
+    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({}));
+    const notify = vi.fn();
+    await applyCreateAgent({ session: SESSION, payload: { name: 'Scout' }, notify } as never);
+    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalled();
   });
 });

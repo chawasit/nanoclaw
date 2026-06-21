@@ -135,6 +135,31 @@ export function getDestinationReferencers(targetAgentGroupId: string): string[] 
   return rows.map((r) => r.agent_group_id);
 }
 
+/**
+ * Count an agent's DIRECT REPORTS — the children it created via `create_agent`.
+ *
+ * `create_agent` is the sole edge-creator and always writes the child→creator
+ * edge with `local_name` 'parent' (or 'parent-<n>' on the rare collision; see
+ * create-agent.ts). So a node's children are exactly the rows that point AT it
+ * through that parent edge. We match `'parent'` / `'parent-<n>'` PRECISELY (not
+ * `LIKE 'parent%'`) so a node that happens to be referenced as e.g. `parental`
+ * can't inflate the count, and the creator's own inbound edge from its
+ * grandparent (a non-`parent` local_name) is naturally excluded.
+ *
+ * Naming-based because the schema has no `parent_id` column (hierarchy is
+ * emergent from destinations). Used by the recruiting headcount cap.
+ */
+export function countChildren(parentAgentGroupId: string): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM agent_destinations
+        WHERE target_type = 'agent' AND target_id = ?
+          AND (local_name = 'parent' OR local_name LIKE 'parent-%')`,
+    )
+    .get(parentAgentGroupId) as { n: number };
+  return row.n;
+}
+
 /** Normalize a human-readable name into a lowercase, dash-separated identifier. */
 export function normalizeName(name: string): string {
   return (
