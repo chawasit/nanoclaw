@@ -212,6 +212,31 @@ describe('handleCreateAgent — recruiting headcount caps (Path A slice 1)', () 
     expect(mockCreateAgentGroup).not.toHaveBeenCalled();
   });
 
+  it('confined (group) scope over cap: denied EARLY — no approval is requested', async () => {
+    // Pins the handleCreateAgent early check: a doomed hire must not bother an admin.
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({}));
+    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
+    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+  });
+
+  it('allow boundary: one slot under each cap still proceeds (off-by-one guard)', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    mockGetAllAgentGroups.mockReturnValue(new Array(24).fill({})); // 24 < 25
+    mockCountChildren.mockReturnValue(9); // 9 < 10
+    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('deny message explains the cap (not an empty/garbled notice)', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({}));
+    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
+    const msg = JSON.parse((mockNotifyWrite.mock.calls[0][2] as { content: string }).content).text as string;
+    expect(msg).toContain('headcount cap');
+  });
+
   it('confined path is capped at CREATION (applyCreateAgent), not only at request time', async () => {
     // The cap must hold even if the request slipped under at approval time and
     // headcount filled up before the admin approved.

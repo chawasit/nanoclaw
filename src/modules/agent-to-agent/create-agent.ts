@@ -33,11 +33,17 @@ import { writeDestinations } from './write-destinations.js';
 /**
  * Recruiting headcount caps (Path A, slice 1; plan §5.4 "Controls").
  *
- * Hard structural anti-runaway brakes applied to EVERY create path — including
- * the trusted global CoS — so a buggy self-recruiting loop or a prompt-injected
+ * Hard structural anti-runaway brakes on the AUTONOMOUS create path —
+ * `create_agent`, both the trusted global-CoS direct route and the confined
+ * route after approval — so a buggy self-recruiting loop or a prompt-injected
  * agent can't fan out unbounded ("Paperclip slop"). Distinct from the authz
  * gate (which only decides direct-create vs approval): caps bound the company's
  * SIZE and a single manager's FAN-OUT regardless of who is trusted.
+ *
+ * SCOPE: this guards the agent-initiated path. The other two creators are
+ * human-gated and intentionally exempt — `channel-approval.createNewAgentGroup`
+ * (a person approves each channel wiring) and the `ncl groups create` CLI.
+ * Neither is an autonomous-runaway vector; see the note on createNewAgentGroup.
  *
  * Configurable via env (generous defaults). FAIL-OPEN + log: this is the
  * load-bearing create path, so a counting bug must never brick hiring.
