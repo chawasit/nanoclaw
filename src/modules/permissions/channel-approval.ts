@@ -274,6 +274,13 @@ export function buildAgentSelectionOptions(
 /**
  * Create a new agent group and initialize its filesystem. Handles
  * folder-name collisions with numeric suffixes.
+ *
+ * NOTE: intentionally NOT subject to the create_agent recruiting headcount caps
+ * (NANOCLAW_MAX_AGENTS etc., see agent-to-agent/create-agent.ts). This path runs
+ * only when a human approves wiring a channel to a brand-new agent — it is
+ * human-gated per-creation, not an autonomous self-recruiting vector, so the
+ * anti-runaway brake doesn't apply. If a non-human-gated channel-create path is
+ * ever added, gate it with the global headcount cap here.
  */
 export function createNewAgentGroup(name: string): AgentGroup {
   let folder = toFolder(name);
