@@ -52,6 +52,7 @@ import { getDeliveryAdapter } from '../../delivery.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { applyBaseProfile } from '../../base-profile.js';
 import { seedPersonality } from '../../personality.js';
+import { seedOnboarding } from '../../onboarding.js';
 import { log } from '../../log.js';
 import type { InboundEvent } from '../../channels/adapter.js';
 import type { AgentGroup } from '../../types.js';
@@ -306,5 +307,6 @@ export function createNewAgentGroup(name: string): AgentGroup {
   initGroupFilesystem(ag);
   applyBaseProfile(ag.id);
   seedPersonality(ag);
+  seedOnboarding(ag);
   return ag;
 }

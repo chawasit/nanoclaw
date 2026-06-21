@@ -18,6 +18,7 @@ const mockCreateAgentGroup = vi.fn();
 const mockInitGroupFilesystem = vi.fn();
 const mockApplyBaseProfile = vi.fn();
 const mockSeedPersonality = vi.fn();
+const mockSeedOnboarding = vi.fn();
 const mockUpdateScalars = vi.fn();
 const mockWriteDestinations = vi.fn();
 const mockNotifyWrite = vi.fn();
@@ -46,6 +47,9 @@ vi.mock('../../base-profile.js', () => ({
 }));
 vi.mock('../../personality.js', () => ({
   seedPersonality: (...a: unknown[]) => mockSeedPersonality(...a),
+}));
+vi.mock('../../onboarding.js', () => ({
+  seedOnboarding: (...a: unknown[]) => mockSeedOnboarding(...a),
 }));
 vi.mock('./write-destinations.js', () => ({
   writeDestinations: (...a: unknown[]) => mockWriteDestinations(...a),

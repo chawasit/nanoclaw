@@ -22,6 +22,7 @@ import { wakeContainer } from '../../container-runner.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { applyBaseProfile } from '../../base-profile.js';
 import { seedPersonality } from '../../personality.js';
+import { seedOnboarding } from '../../onboarding.js';
 import { renderRoleBrief, validateRoleBrief } from '../../role-brief.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
@@ -264,6 +265,7 @@ async function performCreateAgent(
   // Base agent profile (search/scrape MCP + task board) — create-only.
   applyBaseProfile(newGroup.id);
   seedPersonality(newGroup);
+  seedOnboarding(newGroup);
   if (parentProvider) {
     updateContainerConfigScalars(newGroup.id, { provider: parentProvider });
   }
