@@ -27,8 +27,7 @@ function edge(from: string, localName: string, to: string) {
 }
 
 beforeEach(() => {
-  initTestDb();
-  runMigrations();
+  runMigrations(initTestDb());
 });
 afterEach(() => {
   closeDb();
