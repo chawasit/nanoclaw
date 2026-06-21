@@ -160,6 +160,22 @@ export function countChildren(parentAgentGroupId: string): number {
   return row.n;
 }
 
+/**
+ * List an agent's DIRECT REPORTS (child agent_group_ids) — same `parent`/`parent-<n>`
+ * reverse-edge rule as countChildren, but returns the ids (for the Phase 2 spawn-time
+ * team/<report> oversight mounts). Order is insertion order (rowid).
+ */
+export function getChildAgentGroupIds(parentAgentGroupId: string): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT agent_group_id FROM agent_destinations
+        WHERE target_type = 'agent' AND target_id = ?
+          AND (local_name = 'parent' OR local_name LIKE 'parent-%')`,
+    )
+    .all(parentAgentGroupId) as Array<{ agent_group_id: string }>;
+  return rows.map((r) => r.agent_group_id);
+}
+
 /** Normalize a human-readable name into a lowercase, dash-separated identifier. */
 export function normalizeName(name: string): string {
   return (

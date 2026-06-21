@@ -14,6 +14,8 @@ import path from 'path';
 import { GROUPS_DIR } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { getChildAgentGroupIds } from './modules/agent-to-agent/db/agent-destinations.js';
+import { applyLeaderWorkspaceMounts } from './leader-mounts.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -83,6 +85,24 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   if (!row) throw new Error(`Container config not found for agent group: ${agentGroupId}`);
 
   const config = configFromDb(row, group);
+
+  // Phase 2 (dev-log/0048): spawn-time leader overlay computed from the LIVE org
+  // graph — vault RW promotion (upgrade-only) + team/<report> oversight mounts.
+  // Recomputed every spawn so a reorg just changes the mounts next spawn (no file
+  // moves). No-op when COMPANY_NAS_PATH is unset.
+  const reportIds = getChildAgentGroupIds(agentGroupId);
+  const isLeader = reportIds.length > 0 || row.cli_scope === 'global';
+  const reports = reportIds
+    .map((id) => {
+      const g = getAgentGroup(id);
+      return g ? { id, label: g.folder } : null;
+    })
+    .filter((r): r is { id: string; label: string } => r !== null);
+  config.additionalMounts = applyLeaderWorkspaceMounts(config.additionalMounts, {
+    nasPath: process.env.COMPANY_NAS_PATH,
+    isLeader,
+    reports,
+  });
 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
