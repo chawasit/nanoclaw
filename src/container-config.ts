@@ -16,6 +16,7 @@ import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getChildAgentGroupIds } from './modules/agent-to-agent/db/agent-destinations.js';
 import { applyLeaderWorkspaceMounts } from './leader-mounts.js';
+import { disallowedToolsForRole } from './leader-tools.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -47,6 +48,8 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  /** Tool names to DISALLOW for this agent (leader-gated; dev-log/0057). */
+  disallowedTools?: string[];
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -103,6 +106,10 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
     isLeader,
     reports,
   });
+
+  // Durable task-board WRITE tools are manager-only; workers plan with their own
+  // TodoWrite + report_status (SOP). Gate per leadership, recomputed each spawn.
+  config.disallowedTools = disallowedToolsForRole(isLeader);
 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);

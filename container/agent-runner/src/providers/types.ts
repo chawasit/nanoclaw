@@ -79,6 +79,8 @@ export interface ProviderOptions {
    * through to the underlying SDK. If omitted, the SDK default is used.
    */
   effort?: string;
+  /** Extra tool names to disallow (leader-gated board tools; dev-log/0057). */
+  disallowedTools?: string[];
 }
 
 export interface QueryInput {
