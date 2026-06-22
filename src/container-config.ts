@@ -17,6 +17,7 @@ import { getAgentGroup } from './db/agent-groups.js';
 import { getChildAgentGroupIds } from './modules/agent-to-agent/db/agent-destinations.js';
 import { applyLeaderWorkspaceMounts } from './leader-mounts.js';
 import { disallowedToolsForRole } from './leader-tools.js';
+import { applyAutoCompactWindow } from './context-window.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -110,6 +111,10 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   // Durable task-board WRITE tools are manager-only; workers plan with their own
   // TodoWrite + report_status (SOP). Gate per leadership, recomputed each spawn.
   config.disallowedTools = disallowedToolsForRole(isLeader);
+
+  // Auto-compact window follows the model tier each spawn (cloud models hold far
+  // more than the 165K default; local gemma must stay at 165K). Explicit env wins.
+  config.env = applyAutoCompactWindow(config.env, config.model);
 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
