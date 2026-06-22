@@ -61,3 +61,13 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     expect(prompt).toContain('`casa`');
   });
 });
+
+describe('buildSystemPromptAddendum — wrapping example + self-check', () => {
+  it('includes a worked <message> example and a turn-end self-check', () => {
+    seedDestination('telegram', 'Telegram', 'telegram', 'chat-1');
+    const prompt = buildSystemPromptAddendum('CoS');
+    expect(prompt).toContain('Example — replying to an inbound message');
+    expect(prompt).toContain('<message to="telegram">');
+    expect(prompt).toContain('Before ending your turn, check');
+  });
+});

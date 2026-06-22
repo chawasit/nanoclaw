@@ -119,6 +119,14 @@ function buildDestinationsSection(): string {
     'Wrap each delivered message in a `<message to="name">…</message>` block; include several blocks in one response to address several destinations. `<internal>…</internal>` marks thinking you don\'t want sent.',
   );
   lines.push('');
+  const exampleName = all[0].name;
+  lines.push(
+    `**Example — replying to an inbound message.** You received \`<message id="42" from="${exampleName}" sender="alex" time="…">what's the status?</message>\`. Your reply MUST be wrapped the same way: \`<message to="${exampleName}">All set — sending the report now.</message>\`. Anything OUTSIDE a \`<message>\` block — including a long write-up or your final answer — is scratchpad: logged, never sent.`,
+  );
+  lines.push('');
+  lines.push(
+    `**Before ending your turn, check:** is your reply wrapped in a \`<message to="name">\` block? The wrapper is easy to drop at the end of a long turn (after tool calls or a big report) — unwrapped text is silently discarded and you'll be asked to resend.`,
+  );
   lines.push(
     'When replying to an incoming message, default to addressing the destination it came `from` (every inbound `<message>` tag carries a `from="name"` attribute). Pick a different destination when the request asks for it (e.g., "tell Laura that…").',
   );
