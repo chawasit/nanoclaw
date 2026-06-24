@@ -509,10 +509,10 @@ export async function processQuery(
               const destinations = getAllDestinations();
               const names = destinations.map((d) => d.name).join(', ');
               query.push(
-                `<system>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
+                `<nanoclaw_reminders>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
                   `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
                   `Your destinations: ${names}. ` +
-                  `Please re-send your response with the correct wrapping.</system>`,
+                  `Please re-send your response with the correct wrapping.</nanoclaw_reminders>`,
               );
             }
             // The wrapping-retry result answers the SAME user prompt — keep it
