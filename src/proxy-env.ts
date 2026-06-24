@@ -11,17 +11,24 @@
  * actually reach the proxy — and mark api.anthropic.com blocked so it can't spend on
  * the vault key by accident.
  *
- * Scope: ONLY the four LiteLLM-route families. Local gemma (`gemma`, `unsloth/...`)
- * uses the ampere base URL (a DIFFERENT env, set elsewhere) and Claude (`claude-*`)
- * uses the vault key — neither is matched here. Explicit ALWAYS wins: if the agent
- * already has an explicit ANTHROPIC_BASE_URL (e.g. a gemma agent pointed at ampere, or
- * a hand-tuned route), nothing is touched. Pure + table-driven tested; the caller
+ * Scope: the LiteLLM-route families glm-* / minimax-* / gemini-* / gpt-* AND gemma-*
+ * (gemma-4 became a LiteLLM route -> ampere on 2026-06-24, so gemma reaches the proxy
+ * too). Claude (`claude-*`) uses the vault key and is NOT matched. Explicit ALWAYS wins:
+ * if the agent already has an explicit ANTHROPIC_BASE_URL (e.g. a gemma worker pointed
+ * DIRECTLY at ampere, bypassing the proxy, or any hand-tuned route), nothing is touched —
+ * that is the escape hatch for direct-ampere gemma. Pure + table-driven tested; the caller
  * (materializeContainerJson) reads process.env and wires it next to the auto-compact
  * window overlay. Env-gated: no host config -> no-op. dev-log/0068.
  */
 
-/** Model-id prefixes that route through the LiteLLM proxy (after vendor/ strip + lowercase). */
-export const PROXY_MODEL_PREFIXES: readonly string[] = ['glm', 'minimax', 'gemini', 'gpt'];
+/**
+ * Model-id prefixes that route through the LiteLLM proxy (after vendor/ strip + lowercase).
+ * `gemma` is included since 2026-06-24 — `gemma-4` is now a LiteLLM route (anthropic
+ * passthrough -> ampere), so a gemma agent should reach the proxy too. A gemma worker that
+ * wants ampere DIRECTLY (bypassing the proxy) sets an explicit ANTHROPIC_BASE_URL — explicit
+ * always wins (see applyProxyEnv), so that escape hatch is preserved.
+ */
+export const PROXY_MODEL_PREFIXES: readonly string[] = ['glm', 'minimax', 'gemini', 'gpt', 'gemma'];
 
 /** The host the spine should point proxy agents at (read by the caller from its own env). */
 export interface ProxyHost {

@@ -73,17 +73,18 @@ describe('materializeContainerJson proxy-env auto-injection', () => {
     expect(cfg.blockedHosts).toContain('api.anthropic.com');
   });
 
-  it('leaves a gemma/ampere model env UNCHANGED (not a proxy family)', () => {
-    mockGetConfig.mockReturnValue(baseRow({ model: 'unsloth/gemma-4-26B-A4B-it', env: '{"FOO":"bar"}' }));
+  it('injects proxy env for a gemma model (gemma-4 is a LiteLLM route since 2026-06-24)', () => {
+    mockGetConfig.mockReturnValue(baseRow({ model: 'gemma-4', env: '{"FOO":"bar"}' }));
     const cfg = materializeContainerJson('ag-test');
-    expect(cfg.env).toEqual({ FOO: 'bar' });
-    expect(cfg.blockedHosts).toEqual([]);
+    expect(cfg.env?.ANTHROPIC_BASE_URL).toBe('http://192.168.1.37:4000');
+    expect(cfg.env?.FOO).toBe('bar');
+    expect(cfg.blockedHosts).toContain('api.anthropic.com');
   });
 
-  it('does NOT clobber an explicit ANTHROPIC_BASE_URL even on a proxy model (explicit wins)', () => {
+  it('leaves a DIRECT-ampere gemma agent untouched (explicit base URL wins over the proxy)', () => {
     mockGetConfig.mockReturnValue(
       baseRow({
-        model: 'glm-5.2',
+        model: 'unsloth/gemma-4-26B-A4B-it',
         env: '{"ANTHROPIC_BASE_URL":"http://192.168.1.31:11434","ANTHROPIC_API_KEY":"ollama"}',
         blocked_hosts: '[]',
       }),

@@ -24,8 +24,8 @@ describe('isProxyModel', () => {
     ['GLM-5.2', true], // case-insensitive
     ['zai-org/GLM-5.2', true], // vendor/-prefixed still matches glm
     ['openai/gpt-5.4-mini', true],
-    ['unsloth/gemma-4-26B-A4B-it', false], // local gemma (vendor-prefixed)
-    ['gemma-4', false],
+    ['gemma-4', true], // gemma-4 is now a LiteLLM route -> proxy (2026-06-24)
+    ['unsloth/gemma-4-26B-A4B-it', true], // gemma family matches after vendor/ strip
     ['claude-opus-4-8', false],
     ['claude-sonnet-4-6', false],
     [undefined, false],
@@ -40,14 +40,13 @@ describe('isProxyModel', () => {
 
 describe('proxyEnvForModel', () => {
   it('returns the overlay for each proxy family when host config is present', () => {
-    for (const m of ['glm-5.2', 'minimax-m3', 'gemini-3.1-pro', 'gpt-5.5', 'zai-org/GLM-5.2']) {
+    for (const m of ['glm-5.2', 'minimax-m3', 'gemini-3.1-pro', 'gpt-5.5', 'zai-org/GLM-5.2', 'gemma-4', 'unsloth/gemma-4-26B-A4B-it']) {
       expect(proxyEnvForModel(m, HOST)).toEqual(OVERLAY);
     }
   });
-  it('returns null for local gemma / unsloth / claude', () => {
-    expect(proxyEnvForModel('gemma-4', HOST)).toBeNull();
-    expect(proxyEnvForModel('unsloth/gemma-4-26B-A4B-it', HOST)).toBeNull();
+  it('returns null for claude (vault key, not proxied)', () => {
     expect(proxyEnvForModel('claude-opus-4-8', HOST)).toBeNull();
+    expect(proxyEnvForModel('claude-sonnet-4-6', HOST)).toBeNull();
   });
   it('returns null when host config is absent (env-gated no-op)', () => {
     expect(proxyEnvForModel('glm-5.2', undefined)).toBeNull();
@@ -72,9 +71,13 @@ describe('applyProxyEnv', () => {
     const env = { ANTHROPIC_BASE_URL: 'http://192.168.1.31:11434', ANTHROPIC_API_KEY: 'ollama' };
     expect(applyProxyEnv(env, 'glm-5.2', HOST)).toBe(env); // same reference
   });
-  it('leaves env UNCHANGED for a local/gemma model', () => {
+  it('leaves env UNCHANGED for a non-proxy (claude) model', () => {
     const env = { FOO: 'bar' };
-    expect(applyProxyEnv(env, 'unsloth/gemma-4', HOST)).toBe(env);
+    expect(applyProxyEnv(env, 'claude-opus-4-8', HOST)).toBe(env);
+  });
+  it('leaves a DIRECT-ampere gemma agent untouched (explicit base URL wins)', () => {
+    const env = { ANTHROPIC_BASE_URL: 'http://192.168.1.31:11434', ANTHROPIC_API_KEY: 'ollama' };
+    expect(applyProxyEnv(env, 'gemma-4', HOST)).toBe(env); // same reference — the escape hatch
   });
   it('leaves env UNCHANGED when host config is absent', () => {
     const env = { FOO: 'bar' };
@@ -89,10 +92,11 @@ describe('shouldBlockAnthropicForProxy', () => {
   it('true exactly when the overlay would be injected', () => {
     expect(shouldBlockAnthropicForProxy({}, 'glm-5.2', HOST)).toBe(true);
     expect(shouldBlockAnthropicForProxy(undefined, 'gpt-5.5', HOST)).toBe(true);
+    expect(shouldBlockAnthropicForProxy({}, 'gemma-4', HOST)).toBe(true);
   });
-  it('false for explicit base url, local model, or absent host', () => {
+  it('false for explicit base url, claude model, or absent host', () => {
     expect(shouldBlockAnthropicForProxy({ ANTHROPIC_BASE_URL: 'http://x' }, 'glm-5.2', HOST)).toBe(false);
-    expect(shouldBlockAnthropicForProxy({}, 'gemma-4', HOST)).toBe(false);
+    expect(shouldBlockAnthropicForProxy({}, 'claude-opus-4-8', HOST)).toBe(false);
     expect(shouldBlockAnthropicForProxy({}, 'glm-5.2', undefined)).toBe(false);
   });
 });
