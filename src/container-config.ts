@@ -18,6 +18,7 @@ import { getChildAgentGroupIds } from './modules/agent-to-agent/db/agent-destina
 import { applyLeaderWorkspaceMounts } from './leader-mounts.js';
 import { disallowedToolsForRole } from './leader-tools.js';
 import { applyAutoCompactWindow } from './context-window.js';
+import { applyProxyEnv, shouldBlockAnthropicForProxy } from './proxy-env.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -109,6 +110,21 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   // Auto-compact window follows the model tier each spawn (cloud models hold far
   // more than the 165K default; local gemma must stay at 165K). Explicit env wins.
   config.env = applyAutoCompactWindow(config.env, config.model);
+
+  // Auto-inject the LiteLLM-proxy env for proxy-routed models (glm/minimax/gemini/gpt)
+  // so a proxy agent created with an empty env can actually reach the proxy instead of
+  // being dead-on-arrival (dev-log/0068). Env-gated on the spine's own proxy config;
+  // explicit per-agent ANTHROPIC_BASE_URL always wins (gemma-on-ampere untouched).
+  const proxyHost = {
+    baseUrl: process.env.NANOCLAW_PROXY_BASE_URL,
+    apiKey: process.env.NANOCLAW_PROXY_API_KEY,
+  };
+  if (shouldBlockAnthropicForProxy(config.env, config.model, proxyHost)) {
+    config.env = applyProxyEnv(config.env, config.model, proxyHost);
+    const blocked = new Set(config.blockedHosts ?? []);
+    blocked.add('api.anthropic.com');
+    config.blockedHosts = [...blocked];
+  }
 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
