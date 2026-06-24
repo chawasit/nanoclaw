@@ -37,6 +37,7 @@ import {
 import { getDeliveredIds } from './db/session-db.js';
 import { resolveSession, outboundDbPath, openInboundDb } from './session-manager.js';
 import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
+import { _resetSendDedup } from './send-dedup.js';
 
 function now(): string {
   return new Date().toISOString();
@@ -61,16 +62,17 @@ function seedAgentAndChannel(): void {
   });
 }
 
-function insertOutbound(agentGroupId: string, sessionId: string, msgId: string): void {
+function insertOutbound(agentGroupId: string, sessionId: string, msgId: string, text = 'hello'): void {
   const db = new Database(outboundDbPath(agentGroupId, sessionId));
   db.prepare(
     `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
      VALUES (?, datetime('now'), 'chat', 'telegram:123', 'telegram', ?)`,
-  ).run(msgId, JSON.stringify({ text: 'hello' }));
+  ).run(msgId, JSON.stringify({ text }));
   db.close();
 }
 
 beforeEach(() => {
+  _resetSendDedup();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
   const db = initTestDb();
@@ -124,7 +126,7 @@ describe('deliverSessionMessages — concurrent invocations', () => {
 
     // Insert a second outbound message and deliver again — the lock from
     // the first call must have been released.
-    insertOutbound('ag-1', session.id, 'out-second');
+    insertOutbound('ag-1', session.id, 'out-second', 'second distinct message');
     await deliverSessionMessages(session);
     expect(calls).toHaveLength(2);
   });
@@ -339,5 +341,69 @@ describe('deliverSessionMessages — permission check', () => {
     const delivered = getDeliveredIds(inDb);
     inDb.close();
     expect(delivered.has('out-unauth')).toBe(true);
+  });
+});
+
+describe('deliverSessionMessages - content-keyed idempotency (CoS duplicate-send bug)', () => {
+  it('delivers only the FIRST of N identical sends and drops the rest (terminal)', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_channelType, _platformId, _threadId, _kind, content) {
+        calls.push(content);
+        return 'plat-msg-1';
+      },
+    });
+
+    // 3 DISTINCT outbound rows carrying byte-identical content to the same
+    // destination, back-to-back - the exact CoS bug (glm fired send_file 10x).
+    insertOutbound('ag-1', session.id, 'dup-1', 'morning digest');
+    await deliverSessionMessages(session);
+    insertOutbound('ag-1', session.id, 'dup-2', 'morning digest');
+    await deliverSessionMessages(session);
+    insertOutbound('ag-1', session.id, 'dup-3', 'morning digest');
+    await deliverSessionMessages(session);
+
+    // Only ONE reached the channel adapter.
+    expect(calls).toHaveLength(1);
+
+    // The dropped dups are TERMINAL: marked delivered so they never re-enter
+    // the poll (a non-terminal skip would re-fire each tick, then deliver a
+    // delayed duplicate once the window closes).
+    const inDb = openInboundDb('ag-1', session.id);
+    try {
+      const delivered = getDeliveredIds(inDb);
+      expect(delivered.has('dup-1')).toBe(true);
+      expect(delivered.has('dup-2')).toBe(true);
+      expect(delivered.has('dup-3')).toBe(true);
+    } finally {
+      inDb.close();
+    }
+
+    // Re-polling does not resurrect a dropped dup.
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('allows a distinct-content send to the same destination within the window', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_channelType, _platformId, _threadId, _kind, content) {
+        calls.push(content);
+        return 'plat-msg';
+      },
+    });
+
+    insertOutbound('ag-1', session.id, 'm-a', 'first');
+    await deliverSessionMessages(session);
+    insertOutbound('ag-1', session.id, 'm-b', 'second');
+    await deliverSessionMessages(session);
+
+    expect(calls).toHaveLength(2);
   });
 });
