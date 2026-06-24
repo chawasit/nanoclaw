@@ -454,3 +454,48 @@ describe('isCorruptionError', () => {
     expect(isCorruptionError('')).toBe(false);
   });
 });
+
+describe('reasoning-leak guardrail (nested <message> opener)', () => {
+  function seedDest(name: string, channelType: string, platformId: string): void {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES (?, ?, 'channel', ?, ?, NULL)`,
+      )
+      .run(name, name, channelType, platformId);
+  }
+  function oneShot(text: string) {
+    const pushes: string[] = [];
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
+      yield { type: 'result', text } as ProviderEvent;
+    }
+    return {
+      pushes,
+      query: { push: (m: string) => { pushes.push(m); }, end: () => {}, events: events(), abort: () => {} } as AgentQuery,
+    };
+  }
+  const ROUTING = { platformId: 'chan-1', channelType: 'discord', threadId: null, inReplyTo: 'm1' };
+
+  it('drops a block whose body contains a nested <message to="> opener and nudges instead of delivering', async () => {
+    seedDest('discord-main', 'discord', 'chan-1');
+    const leak =
+      '<message to="discord-main">Let me reply. I will wrap in <message to="discord-main">. ' +
+      'End turn. <message to="discord-main"> the real text </message>';
+    const { query, pushes } = oneShot(leak);
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain('was not delivered');
+  });
+
+  it('still delivers a clean single <message> block (no false positive)', async () => {
+    seedDest('discord-main', 'discord', 'chan-1');
+    const { query, pushes } = oneShot('<message to="discord-main">All set — report delivered.</message>');
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('All set — report delivered.');
+    expect(pushes).toHaveLength(0);
+  });
+});

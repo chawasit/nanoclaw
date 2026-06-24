@@ -616,6 +616,19 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
     const body = match[2].trim();
     lastIndex = MESSAGE_RE.lastIndex;
 
+    // Guardrail against reasoning leaks. A real reply body never contains
+    // another `<message to="` opener. Reasoning models (e.g. glm without a
+    // thinking block) narrate the wrapping instruction to themselves and emit
+    // the literal `<message to="name">` string repeatedly inside their
+    // chain-of-thought; the non-greedy MESSAGE_RE then captures a huge slice of
+    // that monologue as a "reply". Treat such a block as scratchpad and let the
+    // turn fall through to the no-output nudge instead of delivering it.
+    if (/<message\s+to="/i.test(body)) {
+      log(`Dropping <message to="${toName}"> block — body contains a nested <message> opener (reasoning leak)`);
+      scratchpadParts.push(match[0]);
+      continue;
+    }
+
     const dest = findByName(toName);
     if (!dest) {
       log(`Unknown destination in <message to="${toName}">, dropping block`);
