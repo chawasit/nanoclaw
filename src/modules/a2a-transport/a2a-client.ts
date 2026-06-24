@@ -17,6 +17,18 @@
  * is set AND an `a2a_peers` row + an `agent_destinations target_type='a2a'` row
  * exist. With the flag off, the delivery branch throws → retry → mark-failed,
  * exactly the unauthorized-channel path; prod is unaffected.
+ *
+ * ⚠️  PRE-ENABLE REFACTOR REQUIRED — DO NOT FLIP THE FLAG IN PROD AS-IS.
+ * `routeA2aMessage` is `await`ed inside `deliverMessage` → `drainSession` →
+ * `pollActive`'s SEQUENTIAL session loop, but it BLOCKS polling `tasks/get`
+ * until the peer's Task is terminal (up to `timeoutMs`). So a single slow peer
+ * would freeze the active delivery poll for EVERY session company-wide until it
+ * completes/times-out. The existing `'agent'` seam (`routeAgentMessage`) never
+ * does this — it writes-and-wakes in sub-second and returns. Before enabling,
+ * refactor to mirror the INBOUND design: deliver = POST `message/send` + store
+ * the peer's taskId, return immediately; a separate background watcher polls
+ * `tasks/get` and injects the reply (an outbound correlation store + watcher in
+ * the fork). Until then this is committed but unsafe-to-enable. (See dev-log.)
  */
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { wakeContainer } from '../../container-runner.js';
