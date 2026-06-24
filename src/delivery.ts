@@ -21,6 +21,7 @@ import {
   migrateDeliveredTable,
 } from './db/session-db.js';
 import { log } from './log.js';
+import { isDuplicateSend, recordSend, SEND_DEDUP_WINDOW_MS } from './send-dedup.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
@@ -367,6 +368,27 @@ async function deliverMessage(
       ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
       : undefined;
 
+  // Content-keyed idempotency backstop. A duplicate is N *distinct* outbound
+  // rows carrying byte-identical content to the same (channel_type, platform_id)
+  // within SEND_DEDUP_WINDOW_MS — the observed CoS bug (glm re-issued one PDF
+  // 10x; all 10 delivered). Orthogonal to the per-message-id `delivered`-table
+  // dedup. Skip is TERMINAL: clear the outbox + return undefined so the caller
+  // marks this row delivered and it never re-enters the poll (a non-terminal
+  // skip would re-fire each tick, then deliver a delayed dup once the window
+  // closes). recordSend runs only AFTER a real deliver() resolves, so a failed
+  // first attempt never poisons the key and suppresses its own retry.
+  if (isDuplicateSend(msg.channel_type, msg.platform_id, msg.content)) {
+    log.warn('Duplicate send dropped (identical content within dedup window)', {
+      id: msg.id,
+      channelType: msg.channel_type,
+      platformId: msg.platform_id,
+      windowMs: SEND_DEDUP_WINDOW_MS,
+      fileCount: files?.length,
+    });
+    clearOutbox(session.agent_group_id, session.id, msg.id);
+    return undefined;
+  }
+
   const platformMsgId = await deliveryAdapter.deliver(
     msg.channel_type,
     msg.platform_id,
@@ -376,6 +398,7 @@ async function deliverMessage(
     files,
     deliverInstance,
   );
+  recordSend(msg.channel_type, msg.platform_id, msg.content);
   log.info('Message delivered', {
     id: msg.id,
     channelType: msg.channel_type,

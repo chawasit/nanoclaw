@@ -13,6 +13,7 @@ import { getCurrentInReplyTo } from '../current-batch.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
+import { findRecentIdenticalSend, SEND_DEDUP_WINDOW_MS } from './send-dedup.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
@@ -30,6 +31,11 @@ function ok(text: string) {
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${text}` }], isError: true };
+}
+
+function dedupWindowLabel(): string {
+  const sec = Math.round(SEND_DEDUP_WINDOW_MS / 1000);
+  return `${sec}s`;
 }
 
 function destinationList(): string {
@@ -115,6 +121,25 @@ export const sendMessage: McpToolDefinition = {
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
 
+    const content = JSON.stringify({ text });
+    const dest = `${routing.channel_type}:${routing.platform_id}`;
+
+    // Idempotency: if this exact content already went to this destination in
+    // the last window, do NOT re-queue it. Tell the agent it is already sent so
+    // it stops retrying. The host (delivery.ts) is the durable backstop; this
+    // is the synchronous signal the agent reads.
+    const dup = findRecentIdenticalSend({
+      channelType: routing.channel_type,
+      platformId: routing.platform_id,
+      content,
+    });
+    if (dup) {
+      log(`send_message: SKIPPED duplicate → ${routing.resolvedName} (matches #${dup.seq})`);
+      return ok(
+        `skipped — identical send to ${dest} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
+      );
+    }
+
     const id = generateId();
     const seq = writeMessageOut({
       id,
@@ -123,11 +148,11 @@ export const sendMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text }),
+      content,
     });
 
     log(`send_message: #${seq} → ${routing.resolvedName}`);
-    return ok(`Message sent to ${routing.resolvedName} (id: ${seq})`);
+    return ok(`queued for delivery to ${dest} (id: ${seq})`);
   },
 };
 
@@ -158,23 +183,42 @@ export const sendFile: McpToolDefinition = {
 
     const id = generateId();
     const filename = (args.filename as string) || path.basename(resolvedPath);
+    const content = JSON.stringify({ text: (args.text as string) || '', files: [filename] });
+    const dest = `${routing.channel_type}:${routing.platform_id}`;
+
+    // Idempotency: identical (destination + content) within the window means
+    // the same file was already queued — skip the re-copy + re-queue and tell
+    // the agent it is already sent. This is the exact CoS bug: glm re-issued one
+    // morning-digest PDF 10x. Check BEFORE the outbox copy so dups leave no
+    // orphan outbox dir.
+    const dup = findRecentIdenticalSend({
+      channelType: routing.channel_type,
+      platformId: routing.platform_id,
+      content,
+    });
+    if (dup) {
+      log(`send_file: SKIPPED duplicate → ${routing.resolvedName} (${filename}, matches #${dup.seq})`);
+      return ok(
+        `skipped — identical send to ${dest} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
+      );
+    }
 
     const outboxDir = path.join('/workspace/outbox', id);
     fs.mkdirSync(outboxDir, { recursive: true });
     fs.copyFileSync(resolvedPath, path.join(outboxDir, filename));
 
-    writeMessageOut({
+    const seq = writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
+      content,
     });
 
-    log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);
-    return ok(`File sent to ${routing.resolvedName} (id: ${id}, filename: ${filename})`);
+    log(`send_file: ${id} (#${seq}) → ${routing.resolvedName} (${filename})`);
+    return ok(`queued for delivery to ${dest} (id: ${seq}, filename: ${filename})`);
   },
 };
 
