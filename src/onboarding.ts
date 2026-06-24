@@ -11,10 +11,11 @@
  *   - Behavior: the agent writes its own `## Onboarding` note when done; the
  *     directive tells it to skip onboarding on later sessions once that note exists.
  *
- * Env-gated on COMPANY_NAS_PATH: the directive references the NAS mounts
- * (/workspace/extra/{vault,shared,work}), so it's inert where the NAS isn't
+ * Env-gated on COMPANY_NAS_PATH: the directive references the company-shared NAS
+ * mounts (/workspace/extra/{vault,shared}), so it's inert where the NAS isn't
  * configured (prod-without-NAS, the local-LLM test instance) — same gate as the
- * mounts in base-profile.
+ * mounts in base-profile. (Private/working files live in the durable group folder
+ * at /workspace/agent, which is always mounted regardless of the NAS.)
  *
  * CREATE-ONLY: call from the creation path AFTER initGroupFilesystem +
  * seedPersonality (both write CLAUDE.local.md). Never from the spawn path.
@@ -38,8 +39,10 @@ export function renderOnboardingBlock(): string {
     '1. Read, in order: `/workspace/extra/vault/sop/agent-workspace.md` →',
     '   `base-agent-contract` → `status-reporting` → your **role brief** (top of this',
     '   file). Skim `/workspace/extra/vault/MOC.md` to see what else exists.',
-    '2. `ls` your mounts: `/workspace/extra/{vault,shared,work}` (and `team/` if you',
-    '   manage people) so you know what is there.',
+    '2. Learn your workspace: **`/workspace/agent`** is your durable private home —',
+    '   keep your working/private files here. **`/workspace/extra/shared`** (RW, all',
+    '   agents) is for anything company-accessible. **`/workspace/extra/vault`** is the',
+    '   company vault (RO; leaders RW). `ls` them so you know what is there.',
     '3. Append an `## Onboarding` note here capturing: your mandate (1 line), your',
     '   workspace paths, the 3-4 SOPs that matter to your role (1 line each), and the',
     '   hand-off convention (write to `shared/from-<you>/…`, then send an a2a pointer).',

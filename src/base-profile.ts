@@ -11,12 +11,12 @@
  *     when configured — governance, since base-agent-contract requires consulting
  *     SOPs (qa-report/0002 #5). Graceful: skipped if COMPANY_VAULT_PATH is unset.
  *   - Company-NAS workspace mounts (COMPANY_NAS_PATH) — the flat shared "NAS":
- *     /workspace/extra/vault (RO floor), /workspace/extra/shared (RW, all agents),
- *     /workspace/extra/work (RW, this agent's own work/<id> dir). The agent's own
- *     work dir is mkdir'd here so the spawn-time mount check (realpathSync) passes.
- *     Leadership vault-RW + team/<report> oversight are NOT applied here (a new hire
- *     has no reports yet and create runs before the org edges exist) — they are a
- *     spawn-time / backfill concern. Graceful: skipped if COMPANY_NAS_PATH is unset.
+ *     /workspace/extra/vault (RO floor) + /workspace/extra/shared (RW, all agents).
+ *     There is NO per-agent NAS work mount — an agent's private/working files live in
+ *     its durable group folder at /workspace/agent (the nanoclaw default group-folder
+ *     mount, added by container-runner). Leadership vault-RW is NOT applied here (a new
+ *     hire has no reports yet and create runs before the org edges exist) — it is a
+ *     spawn-time concern. Graceful: skipped if COMPANY_NAS_PATH is unset.
  *
  * CREATE-ONLY: call from the creation path (create_agent / channel-approval),
  * NEVER from the spawn path (`container-runner.buildMounts`) — re-applying on
@@ -28,7 +28,6 @@
  * writing a dead empty-key config that fails at runtime. The host gets the keys
  * (and COMPANY_VAULT_PATH) from a systemd EnvironmentFile (~/agent-tools.env).
  */
-import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
@@ -92,25 +91,14 @@ export function applyBaseProfile(agentGroupId: string): void {
   // Graceful: skipped if COMPANY_VAULT_PATH is unset, like the API keys.
   ensureMount(process.env.COMPANY_VAULT_PATH, 'sop');
 
-  // Company-NAS flat workspace: vault (RO floor) / shared (RW, all) / own work (RW).
+  // Company-NAS flat workspace: vault (RO floor) + shared (RW, all). The agent's
+  // private/working files live in its durable group folder (/workspace/agent), NOT
+  // on the NAS — so there is no per-agent NAS work mount here.
   // Graceful: skipped if COMPANY_NAS_PATH is unset (prod-without-NAS, test instance).
   const nasPath = process.env.COMPANY_NAS_PATH;
   if (nasPath) {
-    // Pre-create the agent's own work dir — the spawn-time mount validation
-    // rejects a hostPath that doesn't exist (realpathSync → null). Best-effort.
-    const ownWork = path.join(nasPath, 'work', agentGroupId);
-    try {
-      fs.mkdirSync(ownWork, { recursive: true });
-    } catch (err) {
-      log.warn('applyBaseProfile: could not pre-create work dir', {
-        agentGroupId,
-        ownWork,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
     ensureMount(path.join(nasPath, 'vault'), 'vault', true);
     ensureMount(path.join(nasPath, 'shared'), 'shared', false);
-    ensureMount(ownWork, 'work', false);
   }
 
   if (mountsChanged) {

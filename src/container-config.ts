@@ -90,22 +90,16 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
 
   const config = configFromDb(row, group);
 
-  // Phase 2 (dev-log/0048): spawn-time leader overlay computed from the LIVE org
-  // graph — vault RW promotion (upgrade-only) + team/<report> oversight mounts.
+  // Spawn-time workspace overlay (dev-log/0067; supersedes dev-log/0048's per-agent
+  // work + team/<report> mounts). Computes leadership from the LIVE org graph for
+  // vault RW promotion (upgrade-only) and strips the retired per-agent `work` mount.
   // Recomputed every spawn so a reorg just changes the mounts next spawn (no file
   // moves). No-op when COMPANY_NAS_PATH is unset.
   const reportIds = getChildAgentGroupIds(agentGroupId);
   const isLeader = reportIds.length > 0 || row.cli_scope === 'global';
-  const reports = reportIds
-    .map((id) => {
-      const g = getAgentGroup(id);
-      return g ? { id, label: g.folder } : null;
-    })
-    .filter((r): r is { id: string; label: string } => r !== null);
   config.additionalMounts = applyLeaderWorkspaceMounts(config.additionalMounts, {
     nasPath: process.env.COMPANY_NAS_PATH,
     isLeader,
-    reports,
   });
 
   // Durable task-board WRITE tools are manager-only; workers plan with their own

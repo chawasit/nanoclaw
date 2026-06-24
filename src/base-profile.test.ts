@@ -99,7 +99,7 @@ describe('applyBaseProfile', () => {
     expect(mounts.some((m) => m.containerPath === 'sop')).toBe(false);
   });
 
-  it('adds NAS workspace mounts (vault RO, shared RW, own work RW) when COMPANY_NAS_PATH is set', () => {
+  it('adds NAS workspace mounts (vault RO, shared RW) when COMPANY_NAS_PATH is set — NO per-agent work mount', () => {
     process.env.COMPANY_NAS_PATH = '/srv/company-nas';
     mockGet.mockReturnValue(emptyRow());
 
@@ -108,13 +108,10 @@ describe('applyBaseProfile', () => {
     const mounts = updatesByCol().additional_mounts as Mount[];
     expect(mounts).toContainEqual({ hostPath: '/srv/company-nas/vault', containerPath: 'vault', readonly: true });
     expect(mounts).toContainEqual({ hostPath: '/srv/company-nas/shared', containerPath: 'shared', readonly: false });
-    expect(mounts).toContainEqual({
-      hostPath: `/srv/company-nas/work/${ID}`,
-      containerPath: 'work',
-      readonly: false,
-    });
-    // the agent's own work dir must be pre-created so the spawn-time mount check passes
-    expect(mockMkdir).toHaveBeenCalledWith(`/srv/company-nas/work/${ID}`, { recursive: true });
+    // The per-agent NAS work mount is RETIRED — private files live in /workspace/agent.
+    expect(mounts.some((m) => m.containerPath === 'work')).toBe(false);
+    // No work dir is pre-created anymore.
+    expect(mockMkdir).not.toHaveBeenCalled();
   });
 
   it('skips NAS mounts gracefully when COMPANY_NAS_PATH is absent', () => {
@@ -127,14 +124,13 @@ describe('applyBaseProfile', () => {
     expect(mockMkdir).not.toHaveBeenCalled();
   });
 
-  it('NAS mounts are idempotent — does not duplicate existing vault/shared/work', () => {
+  it('NAS mounts are idempotent — does not duplicate existing vault/shared', () => {
     process.env.COMPANY_NAS_PATH = '/srv/company-nas';
     mockGet.mockReturnValue({
       mcp_servers: '{}',
       additional_mounts: JSON.stringify([
         { hostPath: '/old/vault', containerPath: 'vault', readonly: true },
         { hostPath: '/old/shared', containerPath: 'shared', readonly: false },
-        { hostPath: `/old/work`, containerPath: 'work', readonly: false },
         { hostPath: '/srv/nanoclaw/data/tasklist', containerPath: 'tasklist', readonly: true },
       ]),
     });
