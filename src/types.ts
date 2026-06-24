@@ -215,7 +215,8 @@ export interface PendingApproval {
 export interface AgentDestination {
   agent_group_id: string;
   local_name: string;
-  target_type: 'channel' | 'agent';
+  /** 'a2a' references an a2a_peers(id) row — the outbound A2A transport. */
+  target_type: 'channel' | 'agent' | 'a2a';
   target_id: string;
   created_at: string;
 }

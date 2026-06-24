@@ -95,6 +95,11 @@ function resolveRouting(
       resolvedName: to,
     };
   }
+  if (dest.type === 'a2a') {
+    // Outbound A2A peer: platformId carries the peer id (set by write-destinations).
+    // The host's delivery `channel_type === 'a2a'` branch resolves the endpoint.
+    return { channel_type: 'a2a', platform_id: dest.platformId!, thread_id: null, resolvedName: to };
+  }
   return { channel_type: 'agent', platform_id: dest.agentGroupId!, thread_id: null, resolvedName: to };
 }
 

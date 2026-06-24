@@ -68,7 +68,7 @@ export function getDestinationByName(agentGroupId: string, localName: string): A
 /** Reverse lookup: what does this agent call the given target? */
 export function getDestinationByTarget(
   agentGroupId: string,
-  targetType: 'channel' | 'agent',
+  targetType: 'channel' | 'agent' | 'a2a',
   targetId: string,
 ): AgentDestination | undefined {
   return getDb()
@@ -77,7 +77,11 @@ export function getDestinationByTarget(
 }
 
 /** Permission check: can this agent send to this target? */
-export function hasDestination(agentGroupId: string, targetType: 'channel' | 'agent', targetId: string): boolean {
+export function hasDestination(
+  agentGroupId: string,
+  targetType: 'channel' | 'agent' | 'a2a',
+  targetId: string,
+): boolean {
   const row = getDb()
     .prepare('SELECT 1 FROM agent_destinations WHERE agent_group_id = ? AND target_type = ? AND target_id = ? LIMIT 1')
     .get(agentGroupId, targetType, targetId);

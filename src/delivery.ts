@@ -274,6 +274,22 @@ async function deliverMessage(
     return;
   }
 
+  // Outbound A2A transport — route to a remote A2A peer via the a2a-transport
+  // module. Mirrors the 'agent' seam above: a dynamic import guarded by the
+  // table presence so the spine works with the module absent. The module itself
+  // is additionally flag-gated (NANOCLAW_A2A_TRANSPORT_ENABLED) and inert until
+  // an a2a_peers row + an agent_destinations target_type='a2a' row exist, so
+  // this branch never fires in default prod. A throw (module absent, flag off,
+  // unauthorized) falls into the normal retry → mark-failed path.
+  if (msg.channel_type === 'a2a') {
+    if (!hasTable(getDb(), 'a2a_peers')) {
+      throw new Error(`a2a-transport module not installed — cannot route message ${msg.id}`);
+    }
+    const { routeA2aMessage } = await import('./modules/a2a-transport/a2a-client.js');
+    await routeA2aMessage(msg, session);
+    return;
+  }
+
   // Permission check: the source agent must be allowed to deliver to this
   // channel destination. Two ways it passes:
   //

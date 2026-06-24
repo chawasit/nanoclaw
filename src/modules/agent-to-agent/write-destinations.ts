@@ -10,6 +10,7 @@
 import fs from 'fs';
 
 import { getAgentGroup } from '../../db/agent-groups.js';
+import { getDb, hasTable } from '../../db/connection.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { replaceDestinations, type DestinationRow } from '../../db/session-db.js';
 import { log } from '../../log.js';
@@ -45,6 +46,25 @@ export function writeDestinations(agentGroupId: string, sessionId: string): void
         channel_type: null,
         platform_id: null,
         agent_group_id: ag.id,
+      });
+    } else if (row.target_type === 'a2a') {
+      // Outbound A2A peer. The container only needs the peer id to route; the
+      // host resolves the endpoint/auth from a2a_peers at delivery time. We
+      // carry the peer id in platform_id (mirrors how an 'agent' dest carries
+      // the target agent_group_id) so resolveRouting can emit channel_type:'a2a'.
+      // Guarded: skip if the a2a-transport module isn't installed (no peers table).
+      if (!hasTable(getDb(), 'a2a_peers')) continue;
+      const peer = getDb()
+        .prepare('SELECT id, name FROM a2a_peers WHERE id = ?')
+        .get(row.target_id) as { id: string; name: string } | undefined;
+      if (!peer) continue;
+      resolved.push({
+        name: row.local_name,
+        display_name: peer.name ?? row.local_name,
+        type: 'a2a',
+        channel_type: null,
+        platform_id: peer.id,
+        agent_group_id: null,
       });
     }
   }

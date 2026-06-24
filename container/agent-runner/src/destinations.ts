@@ -15,7 +15,7 @@ import { getInboundDb } from './db/connection.js';
 export interface DestinationEntry {
   name: string;
   displayName: string;
-  type: 'channel' | 'agent';
+  type: 'channel' | 'agent' | 'a2a';
   channelType?: string;
   platformId?: string;
   agentGroupId?: string;
@@ -24,7 +24,7 @@ export interface DestinationEntry {
 interface DestRow {
   name: string;
   display_name: string | null;
-  type: 'channel' | 'agent';
+  type: 'channel' | 'agent' | 'a2a';
   channel_type: string | null;
   platform_id: string | null;
   agent_group_id: string | null;

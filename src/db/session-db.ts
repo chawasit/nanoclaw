@@ -57,7 +57,7 @@ export function upsertSessionRouting(
 export interface DestinationRow {
   name: string;
   display_name: string | null;
-  type: 'channel' | 'agent';
+  type: 'channel' | 'agent' | 'a2a';
   channel_type: string | null;
   platform_id: string | null;
   agent_group_id: string | null;
