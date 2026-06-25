@@ -89,7 +89,7 @@ sequenceDiagram
   R->>C: wake container (docker run / already running)
   C->>IDB: poll messages_in
   C->>C: format xml, stream to selected provider
-  C->>ODB: INSERT messages_out (odd seq)<br/>parse <message to="name"> blocks
+  C->>ODB: INSERT messages_out (odd seq)<br/>via send_message / send_file tools
   D->>ODB: 1s poll (active) / 60s (sweep)
   D->>D: hasDestination() re-validate
   D->>B: deliver via adapter
