@@ -116,23 +116,20 @@ function buildDestinationsSection(): string {
   }
   lines.push('');
   lines.push(
-    'Wrap each delivered message in a `<message to="name">…</message>` block; include several blocks in one response to address several destinations. `<internal>…</internal>` marks thinking you don\'t want sent.',
+    'To send anything you MUST call the `send_message` tool — `send_message({ to: "name", text: "…" })` (use `send_file` for files). This is the ONLY way your words reach a destination: plain text in your reply, and anything inside `<message>…</message>` or `<internal>…</internal>` tags, is scratchpad — logged, never delivered.',
   );
   lines.push('');
   const exampleName = all[0].name;
   lines.push(
-    `**Example — replying to an inbound message.** You received \`<message id="42" from="${exampleName}" sender="alex" time="…">what's the status?</message>\`. Your reply MUST be wrapped the same way: \`<message to="${exampleName}">All set — sending the report now.</message>\`. Anything OUTSIDE a \`<message>\` block — including a long write-up or your final answer — is scratchpad: logged, never sent.`,
+    `**Example — replying to an inbound message.** You received \`<message id="42" from="${exampleName}" sender="alex" time="…">what's the status?</message>\`. To reply, call \`send_message({ to: "${exampleName}", text: "All set — sending the report now." })\`. Writing the answer as plain text — or wrapping it in \`<message>\` tags — delivers nothing.`,
   );
   lines.push('');
   lines.push(
-    `**Before ending your turn, check:** is your reply wrapped in a \`<message to="name">\` block? The wrapper is easy to drop at the end of a long turn (after tool calls or a big report) — unwrapped text is silently discarded and you'll be asked to resend.`,
-  );
-  lines.push(
-    'When replying to an incoming message, default to addressing the destination it came `from` (every inbound `<message>` tag carries a `from="name"` attribute). Pick a different destination when the request asks for it (e.g., "tell Laura that…").',
+    'When replying to an incoming message, default to addressing the destination it came `from` (every inbound `<message>` tag carries a `from="name"` attribute — pass that name as `to`). Pick a different destination when the request asks for it (e.g., "tell Laura that…"). If you have a single destination, `to` is optional.',
   );
   lines.push('');
   lines.push(
-    'The `send_message` MCP tool is the same delivery, available mid-turn — handy for a quick acknowledgment ("on it") before a slow tool call. Each `send_message` call and each final-response `<message>` block lands as its own message in the conversation, so they read as a sequence rather than as one combined reply.',
+    'Each `send_message` / `send_file` call lands as its own message in the conversation — send a quick acknowledgment ("on it") before a slow tool call, then the result when done, rather than combining them. A send returns a confirmation; if it returns "already delivered / no retry needed," do NOT send it again — trust the confirmation.',
   );
   return lines.join('\n');
 }

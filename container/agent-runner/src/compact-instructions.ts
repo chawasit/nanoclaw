@@ -27,7 +27,7 @@ const instructions = [
   '   The agent needs to see: who said what, in what order, and from which destination.',
   '',
   '3. At the END of the compaction summary, include this verbatim reminder:',
-  '   "You MUST wrap all responses in <message to="name">...</message> blocks.',
+  '   "Deliver every reply by calling the send_message tool (send_file for files); plain text is not delivered.',
   `   Available destinations: ${names.length > 0 ? names.map((n) => `\`${n}\``).join(', ') : '(none)'}."`,
 ];
 

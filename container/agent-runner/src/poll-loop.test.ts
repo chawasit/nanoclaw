@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
-import { getUndeliveredMessages } from './db/messages-out.js';
+import { getUndeliveredMessages, writeMessageOut } from './db/messages-out.js';
+import { recordDelivery } from './delivery-tracker.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { isCorruptionError, looksLikeMalformedMessageAttempt, processQuery } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
@@ -427,14 +428,14 @@ describe('error result with no <message> envelope', () => {
     expect(pushes).toHaveLength(0);
   });
 
-  it('still nudges (and does not deliver) a normal unwrapped result', async () => {
-    const { query, pushes } = makeResultQuery({ type: 'result', text: 'bare text, no envelope' });
+  it('still nudges (and does not deliver) a normal undelivered result', async () => {
+    const { query, pushes } = makeResultQuery({ type: 'result', text: 'bare text, no send call' });
 
     await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
 
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toContain('was not delivered');
+    expect(pushes[0]).toContain('nothing was delivered');
   });
 });
 
@@ -455,7 +456,7 @@ describe('isCorruptionError', () => {
   });
 });
 
-describe('reasoning-leak guardrail (nested <message> opener)', () => {
+describe('result-text <message> wrappers are no longer delivered (hard-disabled)', () => {
   function seedDest(name: string, channelType: string, platformId: string): void {
     getInboundDb()
       .prepare(
@@ -477,7 +478,18 @@ describe('reasoning-leak guardrail (nested <message> opener)', () => {
   }
   const ROUTING = { platformId: 'chan-1', channelType: 'discord', threadId: null, inReplyTo: 'm1' };
 
-  it('drops a block whose body contains a nested <message to="> opener and nudges instead of delivering', async () => {
+  it('a clean <message> block in result text delivers NOTHING and nudges toward send_message', async () => {
+    seedDest('discord-main', 'discord', 'chan-1');
+    const { query, pushes } = oneShot('<message to="discord-main">All set — report delivered.</message>');
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    // The wrapper path is gone — no outbound row is written from result text.
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    // … and the agent is told to use send_message instead.
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain('no longer a delivery channel');
+  });
+
+  it('a nested-opener reasoning leak also delivers nothing and nudges', async () => {
     seedDest('discord-main', 'discord', 'chan-1');
     const leak =
       '<message to="discord-main">Let me reply. I will wrap in <message to="discord-main">. ' +
@@ -486,17 +498,7 @@ describe('reasoning-leak guardrail (nested <message> opener)', () => {
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toContain('was not delivered');
-  });
-
-  it('still delivers a clean single <message> block (no false positive)', async () => {
-    seedDest('discord-main', 'discord', 'chan-1');
-    const { query, pushes } = oneShot('<message to="discord-main">All set — report delivered.</message>');
-    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
-    const out = getUndeliveredMessages();
-    expect(out).toHaveLength(1);
-    expect(JSON.parse(out[0].content).text).toBe('All set — report delivered.');
-    expect(pushes).toHaveLength(0);
+    expect(pushes[0]).toContain('no longer a delivery channel');
   });
 });
 
@@ -520,7 +522,7 @@ describe('looksLikeMalformedMessageAttempt', () => {
   });
 });
 
-describe('malformed message-tag nudge', () => {
+describe('send_message nudge (undelivered turns)', () => {
   function seedDest(name: string, channelType: string, platformId: string): void {
     getInboundDb()
       .prepare(
@@ -542,26 +544,78 @@ describe('malformed message-tag nudge', () => {
   }
   const ROUTING = { platformId: 'chan-1', channelType: 'telegram', threadId: null, inReplyTo: 'm1' };
 
-  it('nudges with the MALFORMED warning (not the generic one) for a garbled open tag', async () => {
+  it('points a garbled <message> tag at send_message (wrapper nudge, not generic)', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
-    // The exact live shape: garbled open tag, valid close — matches no MESSAGE_RE block.
+    // The exact live shape: garbled open tag, valid close.
     const { query, pushes } = oneShot('<messaggio a="telegram">\nik — morning brief…\n</message>');
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
-    // Nothing delivered (no valid block) …
     expect(getUndeliveredMessages()).toHaveLength(0);
-    // … and the nudge is the pointed malformed-tag one.
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toContain('the tag was MALFORMED');
-    expect(pushes[0]).not.toContain('was not wrapped');
+    expect(pushes[0]).toContain('no longer a delivery channel');
+    expect(pushes[0]).toContain('send_message');
   });
 
-  it('still uses the GENERIC nudge for plain unwrapped prose (no message token)', async () => {
+  it('uses the generic send_message nudge for plain unwrapped prose', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
     const { query, pushes } = oneShot('ik — here is the brief, all clear.');
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(1);
-    expect(pushes[0]).toContain('was not wrapped');
-    expect(pushes[0]).not.toContain('MALFORMED');
+    expect(pushes[0]).toContain('nothing was delivered');
+    expect(pushes[0]).not.toContain('no longer a delivery channel');
+  });
+
+  it('a turn with only <internal> scratchpad is NOT nudged (pure thinking, no reply)', async () => {
+    seedDest('telegram', 'telegram', 'chan-1');
+    const { query, pushes } = oneShot('<internal>thinking… no reply needed this turn</internal>');
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
+});
+
+describe('delivered turn (send_message) is not nudged', () => {
+  function seedDest(name: string, channelType: string, platformId: string): void {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES (?, ?, 'channel', ?, ?, NULL)`,
+      )
+      .run(name, name, channelType, platformId);
+  }
+  const ROUTING = { platformId: 'chan-1', channelType: 'telegram', threadId: null, inReplyTo: 'm1' };
+
+  it('when the agent calls send_message mid-turn, no nudge fires even with trailing text', async () => {
+    seedDest('telegram', 'telegram', 'chan-1');
+    const pushes: string[] = [];
+    // Simulate the agent: between init and result it calls send_message — which
+    // writes an outbound row AND records a delivery — then emits trailing prose.
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
+      writeMessageOut({
+        id: 'out-sim-1',
+        kind: 'chat',
+        platform_id: 'chan-1',
+        channel_type: 'telegram',
+        thread_id: null,
+        content: JSON.stringify({ text: 'delivered via tool' }),
+      });
+      recordDelivery();
+      yield { type: 'result', text: 'ok, sent it.' } as ProviderEvent;
+    }
+    const query = {
+      push: (m: string) => {
+        pushes.push(m);
+      },
+      end: () => {},
+      events: events(),
+      abort: () => {},
+    } as AgentQuery;
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    // The delivery counted → no nudge, and the tool's row is present.
+    expect(pushes).toHaveLength(0);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('delivered via tool');
   });
 });

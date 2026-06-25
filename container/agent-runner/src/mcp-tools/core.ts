@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { getCurrentInReplyTo } from '../current-batch.js';
+import { recordDelivery } from '../delivery-tracker.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
@@ -134,6 +135,10 @@ export const sendMessage: McpToolDefinition = {
       content,
     });
     if (dup) {
+      // A dedup-skip still counts as a delivery — the content WAS delivered by
+      // the original send, so record it; otherwise the poll-loop's "did the
+      // agent deliver anything?" nudge would fight the idempotency guard.
+      recordDelivery();
       log(`send_message: SKIPPED duplicate → ${routing.resolvedName} (matches #${dup.seq})`);
       return ok(
         `skipped — identical send to ${dest} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
@@ -150,6 +155,7 @@ export const sendMessage: McpToolDefinition = {
       thread_id: routing.thread_id,
       content,
     });
+    recordDelivery();
 
     log(`send_message: #${seq} → ${routing.resolvedName}`);
     return ok(`queued for delivery to ${dest} (id: ${seq})`);
@@ -197,6 +203,8 @@ export const sendFile: McpToolDefinition = {
       content,
     });
     if (dup) {
+      // Dedup-skip counts as a delivery (see send_message above).
+      recordDelivery();
       log(`send_file: SKIPPED duplicate → ${routing.resolvedName} (${filename}, matches #${dup.seq})`);
       return ok(
         `skipped — identical send to ${dest} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
@@ -216,6 +224,7 @@ export const sendFile: McpToolDefinition = {
       thread_id: routing.thread_id,
       content,
     });
+    recordDelivery();
 
     log(`send_file: ${id} (#${seq}) → ${routing.resolvedName} (${filename})`);
     return ok(`queued for delivery to ${dest} (id: ${seq}, filename: ${filename})`);

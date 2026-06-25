@@ -1,9 +1,10 @@
-import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
+import { getAllDestinations } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
+import { deliveryCount } from './delivery-tracker.js';
 import {
   formatMessages,
   extractRouting,
@@ -335,6 +336,13 @@ export async function processQuery(
   let queryContinuation: string | undefined;
   let done = false;
   let unwrappedNudged = false;
+  // Delivery-aware turn tracking (send_message-only protocol, dev-log/0083).
+  // The ONLY way a reply reaches a destination is the send_message / send_file
+  // tool; result-text <message> wrappers are no longer dispatched. We snapshot
+  // the in-process delivery counter at each turn's start and re-check it at the
+  // turn's `result` event: if the agent delivered nothing yet produced visible
+  // text, that text is undelivered scratchpad and we nudge it to call the tool.
+  let deliveriesBaseline = deliveryCount();
   // Prompt queue for the exchange hook — each result event consumes the
   // oldest unanswered prompt, except a wrapping-retry result, which answers
   // the same prompt again. Unused (and unmaintained) when the provider
@@ -481,55 +489,53 @@ export async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
-        if (event.text) {
-          const { sent, hasUnwrapped, malformedAttempt } = dispatchResultText(event.text, routing);
-          if (sent === 0 && event.isError === true) {
-            // Non-retryable error turn (e.g. a 403 billing_error) with no
-            // <message> envelope: deliver the notice instead of dropping it as
-            // scratchpad, and skip the re-wrap nudge — it would just re-hammer
-            // the failing gateway turn after turn.
-            deliverErrorResult(event.text, routing);
-            notifyExchangeComplete(onExchangeComplete, {
-              prompt: archivePrompts[0] ?? initialPrompt,
-              result: event.text,
-              continuation: queryContinuation ?? initialContinuation,
-              status: 'error',
-            });
-            archivePrompts.shift();
-          } else {
-            const willRetryWrapping = hasUnwrapped && !unwrappedNudged;
-            notifyExchangeComplete(onExchangeComplete, {
-              prompt: archivePrompts[0] ?? initialPrompt,
-              result: event.text,
-              continuation: queryContinuation ?? initialContinuation,
-              status: hasUnwrapped ? 'undelivered' : 'completed',
-            });
-            if (willRetryWrapping) {
-              unwrappedNudged = true;
-              const destinations = getAllDestinations();
-              const names = destinations.map((d) => d.name).join(', ');
-              // A garbled tag (e.g. `<messaggio a="x">`) gets a pointed "your tag
-              // was malformed" nudge — the generic "you didn't wrap anything" text
-              // misdiagnoses it and the agent tends to re-emit the same bad tag.
-              const reminder = malformedAttempt
-                ? `<nanoclaw_reminders>It looks like you tried to send a message, but the tag was MALFORMED, so nothing was delivered. ` +
-                  `The ONLY valid form is <message to="name">...</message> — the tag name must be exactly "message" (not a variant or typo), ` +
-                  `the attribute must be to="name" with double quotes, and it must be closed with </message>. ` +
-                  `Your destinations: ${names}. ` +
-                  `Please re-send your response using the exact <message to="name">...</message> form.</nanoclaw_reminders>`
-                : `<nanoclaw_reminders>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
-                  `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
-                  `Your destinations: ${names}. ` +
-                  `Please re-send your response with the correct wrapping.</nanoclaw_reminders>`;
-              query.push(reminder);
-            }
-            // The wrapping-retry result answers the SAME user prompt — keep it
-            // queued so the retry archives against it, not the nudge text.
-            if (!willRetryWrapping) archivePrompts.shift();
-          }
-        } else {
+        // Did the agent deliver anything this turn? The only delivery path is
+        // the send_message / send_file tool (tracked in-process). Visible text
+        // that isn't <internal> scratchpad, with no delivery, means the agent
+        // left its reply undelivered — nudge it to use the tool.
+        const delivered = deliveryCount() > deliveriesBaseline;
+        const scratchpad = event.text ? stripInternalTags(event.text).trim() : '';
+        const undelivered = !delivered && scratchpad.length > 0;
+
+        if (!delivered && event.isError === true && event.text) {
+          // Non-retryable error turn (e.g. a 403 billing_error) that delivered
+          // nothing: surface the notice to the triggering channel instead of
+          // dropping it as scratchpad, and do NOT nudge — re-prompting would
+          // just re-hammer the failing gateway turn after turn.
+          deliverErrorResult(event.text, routing);
+          notifyExchangeComplete(onExchangeComplete, {
+            prompt: archivePrompts[0] ?? initialPrompt,
+            result: event.text,
+            continuation: queryContinuation ?? initialContinuation,
+            status: 'error',
+          });
           archivePrompts.shift();
+        } else {
+          const willNudge = undelivered && !unwrappedNudged;
+          if (undelivered) {
+            log(
+              `WARNING: turn produced text but nothing was delivered (no send_message/send_file call)` +
+                (willNudge ? ' — nudging' : ' — already nudged this turn'),
+            );
+          }
+          notifyExchangeComplete(onExchangeComplete, {
+            prompt: archivePrompts[0] ?? initialPrompt,
+            result: event.text ?? '',
+            continuation: queryContinuation ?? initialContinuation,
+            status: undelivered ? 'undelivered' : 'completed',
+          });
+          if (willNudge) {
+            unwrappedNudged = true;
+            query.push(buildSendNudge(scratchpad));
+          }
+          // A nudge re-asks the SAME user prompt — keep it queued so the retry
+          // archives against it, not the nudge text.
+          if (!willNudge) archivePrompts.shift();
         }
+        // Re-baseline for the next turn on this still-open stream: a follow-up
+        // push starts a fresh turn whose deliveries must count from here, and a
+        // post-nudge re-send is detected as a delivery against this baseline.
+        deliveriesBaseline = deliveryCount();
       }
     }
   } catch (err) {
@@ -582,13 +588,14 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
 
 /**
  * Deliver a turn's text straight to the channel the batch arrived on. Used when
- * a turn ends in a provider error (e.g. a non-retryable 403 billing_error) with
- * no <message> envelope: the notice would otherwise be dropped as scratchpad.
- * This is the same user-facing write the outer catch block does, minus the
- * `Error:` prefix — the provider's text is already a user-facing message.
+ * a turn ends in a provider error (e.g. a non-retryable 403 billing_error) and
+ * the agent delivered nothing via the send tools: the notice would otherwise be
+ * dropped as scratchpad. This is the same user-facing write the outer catch
+ * block does, minus the `Error:` prefix — the provider's text is already a
+ * user-facing message.
  */
 function deliverErrorResult(text: string, routing: RoutingContext): void {
-  log('Error result with no <message> envelope — delivering to channel');
+  log('Error result with no delivery — delivering provider notice to channel');
   writeMessageOut({
     id: generateId(),
     in_reply_to: routing.inReplyTo,
@@ -617,134 +624,32 @@ export function looksLikeMalformedMessageAttempt(text: string): boolean {
 }
 
 /**
- * Parse the agent's final text for <message to="name">...</message> blocks
- * and dispatch each one to its resolved destination. Text outside of blocks
- * (including <internal>...</internal>) is scratchpad — logged but not sent.
- *
- * The agent must always wrap output in <message to="name">...</message>
- * blocks, even with a single destination. Bare text is scratchpad only.
- *
- * `malformedAttempt` distinguishes "agent tried to send but garbled the tag"
- * (e.g. `<messaggio a="x">`) from plain unwrapped prose, so the caller can nudge
- * with a pointed "your tag was malformed" warning instead of the generic one. It
- * is computed only from text OUTSIDE matched blocks, so a well-formed block that
- * was dropped (reasoning-leak / unknown-dest) is NOT mistaken for a malformed tag.
+ * Build the "nothing was delivered" nudge (send_message-only protocol). A turn
+ * that produced visible text but called no send tool left its reply
+ * undelivered. If the leftover scratchpad looks like the agent TRIED to deliver
+ * via the retired `<message to=…>` wrapper (or a garbled variant), point that
+ * out specifically — otherwise the agent re-emits the same wrapper and loops.
+ * Otherwise give the generic send_message nudge. `scratchpad` is already
+ * internal-stripped by the caller.
  */
-function dispatchResultText(
-  text: string,
-  routing: RoutingContext,
-): { sent: number; hasUnwrapped: boolean; malformedAttempt: boolean } {
-  const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
-
-  let match: RegExpExecArray | null;
-  let sent = 0;
-  let lastIndex = 0;
-  const scratchpadParts: string[] = [];
-  // Text OUTSIDE any matched <message> block — where a garbled tag would land.
-  // Distinct from scratchpadParts, which also collects dropped (but well-formed)
-  // blocks; those must NOT count toward malformed-tag detection.
-  const outsideBlockParts: string[] = [];
-
-  while ((match = MESSAGE_RE.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      const between = text.slice(lastIndex, match.index);
-      scratchpadParts.push(between);
-      outsideBlockParts.push(between);
-    }
-    const toName = match[1];
-    const body = match[2].trim();
-    lastIndex = MESSAGE_RE.lastIndex;
-
-    // Guardrail against reasoning leaks. A real reply body never contains
-    // another `<message to="` opener. Reasoning models (e.g. glm without a
-    // thinking block) narrate the wrapping instruction to themselves and emit
-    // the literal `<message to="name">` string repeatedly inside their
-    // chain-of-thought; the non-greedy MESSAGE_RE then captures a huge slice of
-    // that monologue as a "reply". Treat such a block as scratchpad and let the
-    // turn fall through to the no-output nudge instead of delivering it.
-    if (/<message\s+to="/i.test(body)) {
-      log(`Dropping <message to="${toName}"> block — body contains a nested <message> opener (reasoning leak)`);
-      scratchpadParts.push(match[0]);
-      continue;
-    }
-
-    const dest = findByName(toName);
-    if (!dest) {
-      log(`Unknown destination in <message to="${toName}">, dropping block`);
-      scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
-      continue;
-    }
-    sendToDestination(dest, body, routing);
-    sent++;
-  }
-  if (lastIndex < text.length) {
-    const tail = text.slice(lastIndex);
-    scratchpadParts.push(tail);
-    outsideBlockParts.push(tail);
-  }
-
-  const scratchpad = stripInternalTags(scratchpadParts.join(''));
-
-  if (scratchpad) {
-    log(`[scratchpad] ${scratchpad.slice(0, 500)}${scratchpad.length > 500 ? '…' : ''}`);
-  }
-
-  const hasUnwrapped = sent === 0 && !!scratchpad;
-  // Only flag a malformed attempt when nothing was sent and the text OUTSIDE any
-  // block (internal-stripped) carries a garbled message-tag token — that's the
-  // signal the agent meant to send but botched the envelope.
-  const malformedAttempt =
-    sent === 0 && looksLikeMalformedMessageAttempt(stripInternalTags(outsideBlockParts.join('')));
-  if (hasUnwrapped) {
-    log(
-      `WARNING: agent output had no <message to="..."> blocks — nothing was sent` +
-        (malformedAttempt ? ' (looks like a malformed <message> tag)' : ''),
+function buildSendNudge(scratchpad: string): string {
+  const names = getAllDestinations()
+    .map((d) => d.name)
+    .join(', ');
+  const looksLikeWrapper = /<message\s+to=/i.test(scratchpad) || looksLikeMalformedMessageAttempt(scratchpad);
+  if (looksLikeWrapper) {
+    return (
+      `<nanoclaw_reminders>Your reply was NOT delivered. It looks like you wrote a <message to="…"> tag — ` +
+      `that wrapper is no longer a delivery channel; plain text and <message> tags are scratchpad only. ` +
+      `To actually send, call the send_message tool — send_message({ to: "name", text: "…" }) (use send_file for files). ` +
+      `Your destinations: ${names}. Re-send your reply now via send_message.</nanoclaw_reminders>`
     );
   }
-  return { sent, hasUnwrapped, malformedAttempt };
-}
-
-function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {
-  const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
-  const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
-  // Resolve thread_id per-destination from the most recent inbound message
-  // that came from this same channel+platform. In agent-shared sessions,
-  // different destinations have different thread contexts — using a single
-  // routing.threadId would stamp one channel's thread onto another.
-  const destRouting = resolveDestinationThread(channelType, platformId);
-  writeMessageOut({
-    id: generateId(),
-    in_reply_to: destRouting?.inReplyTo ?? routing.inReplyTo,
-    kind: 'chat',
-    platform_id: platformId,
-    channel_type: channelType,
-    thread_id: destRouting?.threadId ?? null,
-    content: JSON.stringify({ text: body }),
-  });
-}
-
-/**
- * Find the thread_id and message id from the most recent inbound message
- * matching the given channel+platform. Returns null if no match found.
- */
-function resolveDestinationThread(
-  channelType: string,
-  platformId: string,
-): { threadId: string | null; inReplyTo: string | null } | null {
-  try {
-    const db = getInboundDb();
-    const row = db
-      .prepare(
-        `SELECT thread_id, id FROM messages_in
-         WHERE channel_type = ? AND platform_id = ?
-         ORDER BY seq DESC LIMIT 1`,
-      )
-      .get(channelType, platformId) as { thread_id: string | null; id: string } | undefined;
-    if (row) return { threadId: row.thread_id, inReplyTo: row.id };
-  } catch (err) {
-    log(`resolveDestinationThread error: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return null;
+  return (
+    `<nanoclaw_reminders>Your last turn produced text but nothing was delivered — you did not call the send_message tool, ` +
+    `so your reply was not sent. Plain text is scratchpad; only send_message (and send_file) deliver. ` +
+    `Call send_message({ to: "name", text: "…" }) to send it. Your destinations: ${names}. Re-send it now.</nanoclaw_reminders>`
+  );
 }
 
 function sleep(ms: number): Promise<void> {
