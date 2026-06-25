@@ -301,6 +301,6 @@ async function performCreateAgent(
   // tries to send to the newly-created child.
   writeDestinations(session.agent_group_id, session.id);
 
-  notify(`Agent "${localName}" created. You can now message it with <message to="${localName}">...</message>.`);
+  notify(`Agent "${localName}" created. You can now message it with send_message({ to: "${localName}", text: "…" }).`);
   log.info('Agent group created', { agentGroupId, name, localName, folder, parent: sourceGroup.id });
 }

@@ -142,3 +142,61 @@ describe('send_file - content-keyed idempotency (the literal CoS bug path)', () 
     if (tmpFile && fs.existsSync(tmpFile)) fs.rmSync(tmpFile);
   });
 });
+
+/**
+ * Destination resolution on the TOOL path. Under the send_message-only
+ * protocol (dev-log/0083) the tool is the sole delivery path, so the routing
+ * the old result-text <message> wrapper used to do (and which the integration
+ * e2e suite used to cover) now lives here. The big behavioural improvement: an
+ * unknown destination returns an ERROR to the agent instead of being silently
+ * dropped — that error is the safety net the old wrapper path lacked.
+ */
+describe('send_message — destination resolution (tool path; replaces wrapper routing)', () => {
+  function seedChannel(name: string, channelType: string, platformId: string): void {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES (?, ?, 'channel', ?, ?, NULL)`,
+      )
+      .run(name, name, channelType, platformId);
+  }
+
+  it('resolves a named destination and stamps its routing on the outbound row', async () => {
+    seedChannel('discord-test', 'discord', 'chan-1');
+    await sendMessage.handler({ to: 'discord-test', text: 'hi' });
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(out[0].channel_type).toBe('discord');
+    expect(out[0].platform_id).toBe('chan-1');
+    expect(JSON.parse(out[0].content).text).toBe('hi');
+  });
+
+  it('returns an error (writing NO row) for an unknown destination — the replacement for the old silent wrapper drop', async () => {
+    seedChannel('discord-test', 'discord', 'chan-1');
+    const res = await sendMessage.handler({ to: 'nonexistent', text: 'dropped?' });
+    expect(res.isError).toBe(true);
+    const text = (res.content[0] as { text: string }).text;
+    expect(text).toContain('Unknown destination "nonexistent"');
+    // Lists the known destinations so the agent can correct itself.
+    expect(text).toContain('discord-test');
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
+  it('with multiple destinations and no `to`, asks the agent to specify one (no row)', async () => {
+    // beforeEach seeded 'peer'; add a 2nd so there's ambiguity and no session default.
+    seedChannel('discord-test', 'discord', 'chan-1');
+    const res = await sendMessage.handler({ text: 'to whom?' });
+    expect(res.isError).toBe(true);
+    expect((res.content[0] as { text: string }).text).toContain('specify');
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
+  it('with a single destination and no `to`, delivers to it', async () => {
+    // Only the beforeEach 'peer' (agent) destination exists.
+    await sendMessage.handler({ text: 'sole reply' });
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(out[0].channel_type).toBe('agent');
+    expect(out[0].platform_id).toBe('ag-peer');
+  });
+});
