@@ -482,7 +482,7 @@ export async function processQuery(
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
         if (event.text) {
-          const { sent, hasUnwrapped } = dispatchResultText(event.text, routing);
+          const { sent, hasUnwrapped, malformedAttempt } = dispatchResultText(event.text, routing);
           if (sent === 0 && event.isError === true) {
             // Non-retryable error turn (e.g. a 403 billing_error) with no
             // <message> envelope: deliver the notice instead of dropping it as
@@ -508,12 +508,20 @@ export async function processQuery(
               unwrappedNudged = true;
               const destinations = getAllDestinations();
               const names = destinations.map((d) => d.name).join(', ');
-              query.push(
-                `<nanoclaw_reminders>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
+              // A garbled tag (e.g. `<messaggio a="x">`) gets a pointed "your tag
+              // was malformed" nudge — the generic "you didn't wrap anything" text
+              // misdiagnoses it and the agent tends to re-emit the same bad tag.
+              const reminder = malformedAttempt
+                ? `<nanoclaw_reminders>It looks like you tried to send a message, but the tag was MALFORMED, so nothing was delivered. ` +
+                  `The ONLY valid form is <message to="name">...</message> — the tag name must be exactly "message" (not a variant or typo), ` +
+                  `the attribute must be to="name" with double quotes, and it must be closed with </message>. ` +
+                  `Your destinations: ${names}. ` +
+                  `Please re-send your response using the exact <message to="name">...</message> form.</nanoclaw_reminders>`
+                : `<nanoclaw_reminders>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
                   `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
                   `Your destinations: ${names}. ` +
-                  `Please re-send your response with the correct wrapping.</nanoclaw_reminders>`,
-              );
+                  `Please re-send your response with the correct wrapping.</nanoclaw_reminders>`;
+              query.push(reminder);
             }
             // The wrapping-retry result answers the SAME user prompt — keep it
             // queued so the retry archives against it, not the nudge text.
@@ -593,24 +601,55 @@ function deliverErrorResult(text: string, routing: RoutingContext): void {
 }
 
 /**
+ * Heuristic: does this text look like a BOTCHED attempt to send a message —
+ * a `<message>`-tag-ish token that did NOT form the canonical
+ * `<message to="name">...</message>` envelope? Catches the live failure where
+ * glm emitted `<messaggio a="telegram">...</message>` (garbled tag name + wrong
+ * `a=` attribute, valid close), plus unquoted/unclosed openers (`<message to=x>`,
+ * `<message to="x"` …) and stray `</message>` closes. Intended to run on the text
+ * OUTSIDE any successfully-parsed block, so a well-formed block dropped for another
+ * reason (reasoning-leak / unknown destination) does NOT trip it. Text passed in
+ * should already be internal-stripped so `<message>` examples an agent narrates to
+ * itself inside `<internal>` don't count.
+ */
+export function looksLikeMalformedMessageAttempt(text: string): boolean {
+  return /<\s*\/?\s*messag\w*\b|<\s*\/?\s*msg\b/i.test(text);
+}
+
+/**
  * Parse the agent's final text for <message to="name">...</message> blocks
  * and dispatch each one to its resolved destination. Text outside of blocks
  * (including <internal>...</internal>) is scratchpad — logged but not sent.
  *
  * The agent must always wrap output in <message to="name">...</message>
  * blocks, even with a single destination. Bare text is scratchpad only.
+ *
+ * `malformedAttempt` distinguishes "agent tried to send but garbled the tag"
+ * (e.g. `<messaggio a="x">`) from plain unwrapped prose, so the caller can nudge
+ * with a pointed "your tag was malformed" warning instead of the generic one. It
+ * is computed only from text OUTSIDE matched blocks, so a well-formed block that
+ * was dropped (reasoning-leak / unknown-dest) is NOT mistaken for a malformed tag.
  */
-function dispatchResultText(text: string, routing: RoutingContext): { sent: number; hasUnwrapped: boolean } {
+function dispatchResultText(
+  text: string,
+  routing: RoutingContext,
+): { sent: number; hasUnwrapped: boolean; malformedAttempt: boolean } {
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
   let match: RegExpExecArray | null;
   let sent = 0;
   let lastIndex = 0;
   const scratchpadParts: string[] = [];
+  // Text OUTSIDE any matched <message> block — where a garbled tag would land.
+  // Distinct from scratchpadParts, which also collects dropped (but well-formed)
+  // blocks; those must NOT count toward malformed-tag detection.
+  const outsideBlockParts: string[] = [];
 
   while ((match = MESSAGE_RE.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      scratchpadParts.push(text.slice(lastIndex, match.index));
+      const between = text.slice(lastIndex, match.index);
+      scratchpadParts.push(between);
+      outsideBlockParts.push(between);
     }
     const toName = match[1];
     const body = match[2].trim();
@@ -639,7 +678,9 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
     sent++;
   }
   if (lastIndex < text.length) {
-    scratchpadParts.push(text.slice(lastIndex));
+    const tail = text.slice(lastIndex);
+    scratchpadParts.push(tail);
+    outsideBlockParts.push(tail);
   }
 
   const scratchpad = stripInternalTags(scratchpadParts.join(''));
@@ -649,10 +690,18 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
   }
 
   const hasUnwrapped = sent === 0 && !!scratchpad;
+  // Only flag a malformed attempt when nothing was sent and the text OUTSIDE any
+  // block (internal-stripped) carries a garbled message-tag token — that's the
+  // signal the agent meant to send but botched the envelope.
+  const malformedAttempt =
+    sent === 0 && looksLikeMalformedMessageAttempt(stripInternalTags(outsideBlockParts.join('')));
   if (hasUnwrapped) {
-    log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
+    log(
+      `WARNING: agent output had no <message to="..."> blocks — nothing was sent` +
+        (malformedAttempt ? ' (looks like a malformed <message> tag)' : ''),
+    );
   }
-  return { sent, hasUnwrapped };
+  return { sent, hasUnwrapped, malformedAttempt };
 }
 
 function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {

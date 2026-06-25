@@ -4,7 +4,7 @@ import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
-import { isCorruptionError, processQuery } from './poll-loop.js';
+import { isCorruptionError, looksLikeMalformedMessageAttempt, processQuery } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
 import type { AgentQuery, ProviderEvent } from './providers/types.js';
 
@@ -497,5 +497,71 @@ describe('reasoning-leak guardrail (nested <message> opener)', () => {
     expect(out).toHaveLength(1);
     expect(JSON.parse(out[0].content).text).toBe('All set — report delivered.');
     expect(pushes).toHaveLength(0);
+  });
+});
+
+describe('looksLikeMalformedMessageAttempt', () => {
+  it('detects the live failure: garbled tag name + wrong attribute', () => {
+    // The actual CoS morning-brief tag (glm): <messaggio a="telegram">…</message>
+    expect(looksLikeMalformedMessageAttempt('<messaggio a="telegram">brief…</message>')).toBe(true);
+  });
+
+  it('detects unquoted / unclosed openers and stray closes', () => {
+    expect(looksLikeMalformedMessageAttempt('<message to=telegram>hi</message>')).toBe(true); // no quotes
+    expect(looksLikeMalformedMessageAttempt('<message to="telegram" oops')).toBe(true); // unclosed open
+    expect(looksLikeMalformedMessageAttempt('some text </message>')).toBe(true); // stray close
+    expect(looksLikeMalformedMessageAttempt('<msg to="telegram">hi</msg>')).toBe(true); // abbreviated
+  });
+
+  it('is false for plain prose with no message-tag token', () => {
+    expect(looksLikeMalformedMessageAttempt('I will send a message to ik shortly.')).toBe(false);
+    expect(looksLikeMalformedMessageAttempt('bare text, no envelope')).toBe(false);
+    expect(looksLikeMalformedMessageAttempt('')).toBe(false);
+  });
+});
+
+describe('malformed message-tag nudge', () => {
+  function seedDest(name: string, channelType: string, platformId: string): void {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES (?, ?, 'channel', ?, ?, NULL)`,
+      )
+      .run(name, name, channelType, platformId);
+  }
+  function oneShot(text: string) {
+    const pushes: string[] = [];
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
+      yield { type: 'result', text } as ProviderEvent;
+    }
+    return {
+      pushes,
+      query: { push: (m: string) => { pushes.push(m); }, end: () => {}, events: events(), abort: () => {} } as AgentQuery,
+    };
+  }
+  const ROUTING = { platformId: 'chan-1', channelType: 'telegram', threadId: null, inReplyTo: 'm1' };
+
+  it('nudges with the MALFORMED warning (not the generic one) for a garbled open tag', async () => {
+    seedDest('telegram', 'telegram', 'chan-1');
+    // The exact live shape: garbled open tag, valid close — matches no MESSAGE_RE block.
+    const { query, pushes } = oneShot('<messaggio a="telegram">\nik — morning brief…\n</message>');
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    // Nothing delivered (no valid block) …
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    // … and the nudge is the pointed malformed-tag one.
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain('the tag was MALFORMED');
+    expect(pushes[0]).not.toContain('was not wrapped');
+  });
+
+  it('still uses the GENERIC nudge for plain unwrapped prose (no message token)', async () => {
+    seedDest('telegram', 'telegram', 'chan-1');
+    const { query, pushes } = oneShot('ik — here is the brief, all clear.');
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain('was not wrapped');
+    expect(pushes[0]).not.toContain('MALFORMED');
   });
 });
