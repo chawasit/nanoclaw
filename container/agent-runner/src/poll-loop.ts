@@ -343,6 +343,20 @@ export async function processQuery(
   // turn's `result` event: if the agent delivered nothing yet produced visible
   // text, that text is undelivered scratchpad and we nudge it to call the tool.
   let deliveriesBaseline = deliveryCount();
+  // STREAM-scoped delivery flag: has the agent delivered anything (send_message /
+  // send_file) at any point on this open query? The per-turn delta above
+  // re-baselines after every result event, which false-fired the nudge in the
+  // live pattern: turn 1 delivers the reply, a spurious follow-up (an empty /
+  // post-send echo inbound) is PUSHED, then turn 2 is a terminal text-only result
+  // (e.g. just "Done") — read per-turn that looks undelivered and got nudged,
+  // even though the reply was already sent. So the agent re-sent and the spine
+  // skipped the dup (wasted round-trip). Tracking delivery for the whole stream
+  // fixes it. Accepted trade-off (false NEGATIVE): once anything is delivered on
+  // a stream, a genuinely-forgotten plain-text reply to a LATER follow-up on the
+  // same stream won't nudge — acceptable, since the nudge is a safety net and an
+  // agent that just delivered is unlikely to forget the very next send, whereas
+  // the false POSITIVE was actively harming prod (re-send loops, code-137 exits).
+  let deliveredThisStream = false;
   // Prompt queue for the exchange hook — each result event consumes the
   // oldest unanswered prompt, except a wrapping-retry result, which answers
   // the same prompt again. Unused (and unmaintained) when the provider
@@ -493,11 +507,14 @@ export async function processQuery(
         // the send_message / send_file tool (tracked in-process). Visible text
         // that isn't <internal> scratchpad, with no delivery, means the agent
         // left its reply undelivered — nudge it to use the tool.
-        const delivered = deliveryCount() > deliveriesBaseline;
+        const deliveredThisTurn = deliveryCount() > deliveriesBaseline;
+        if (deliveredThisTurn) deliveredThisStream = true;
         const scratchpad = event.text ? stripInternalTags(event.text).trim() : '';
-        const undelivered = !delivered && scratchpad.length > 0;
+        // Stream-scoped: a text-only turn after ANY earlier delivery on this
+        // stream is not an undelivered reply (see deliveredThisStream).
+        const undelivered = !deliveredThisStream && scratchpad.length > 0;
 
-        if (!delivered && event.isError === true && event.text) {
+        if (!deliveredThisTurn && event.isError === true && event.text) {
           // Non-retryable error turn (e.g. a 403 billing_error) that delivered
           // nothing: surface the notice to the triggering channel instead of
           // dropping it as scratchpad, and do NOT nudge — re-prompting would

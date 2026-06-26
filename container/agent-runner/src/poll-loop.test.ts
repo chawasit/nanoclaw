@@ -618,4 +618,43 @@ describe('delivered turn (send_message) is not nudged', () => {
     expect(out).toHaveLength(1);
     expect(JSON.parse(out[0].content).text).toBe('delivered via tool');
   });
+
+  it('a terminal "Done" turn after a delivery does NOT nudge (the live false positive)', async () => {
+    seedDest('telegram', 'telegram', 'chan-1');
+    const pushes: string[] = [];
+    // The live circle-main pattern (nanoclaw.error.log): turn 1 delivers the real
+    // reply via send_message ("Delivered (id 29)"), then a later result event is a
+    // terminal text-only "Done" with no further delivery. (In prod the second turn
+    // arrives via a pushed spurious follow-up — an empty / post-send echo inbound;
+    // a separate, manually-verified RED run confirmed the pushed-follow-up variant
+    // also nudged on the old per-turn code and is fixed here. We keep the committed
+    // test push-free so it stays fast and doesn't perturb the timing-flaky
+    // slash-command test under full-suite load.) STREAM-scoped delivery tracking
+    // means an earlier delivery on the stream suppresses the nudge for the "Done".
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
+      writeMessageOut({
+        id: 'out-live-1',
+        kind: 'chat',
+        platform_id: 'chan-1',
+        channel_type: 'telegram',
+        thread_id: null,
+        content: JSON.stringify({ text: 'the real reply' }),
+      });
+      recordDelivery();
+      yield { type: 'result', text: 'Delivered (id 29).' } as ProviderEvent;
+      yield { type: 'result', text: 'Done.' } as ProviderEvent; // terminal, no new delivery
+    }
+    const query = {
+      push: (m: string) => {
+        pushes.push(m);
+      },
+      end: () => {},
+      events: events(),
+      abort: () => {},
+    } as AgentQuery;
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    // The reply was already delivered on this stream — the trailing "Done" must NOT nudge.
+    expect(pushes.some((p) => p.includes('nothing was delivered'))).toBe(false);
+  });
 });
