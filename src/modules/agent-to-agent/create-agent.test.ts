@@ -198,63 +198,41 @@ describe('handleCreateAgent — scope-based authorization', () => {
   });
 });
 
-describe('handleCreateAgent — recruiting headcount caps (Path A slice 1)', () => {
-  it('default caps (env unset): a normal hire proceeds', async () => {
+describe('handleCreateAgent — org-size caps REMOVED (M08 cap-removal half)', () => {
+  afterEach(() => {
+    delete process.env.NANOCLAW_MAX_AGENTS;
+    delete process.env.NANOCLAW_MAX_DIRECT_REPORTS;
+  });
+
+  it('default (env unset): a normal hire proceeds', async () => {
     mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
-    // getAllAgentGroups → [] and countChildren → 0 by default (beforeEach)
     await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
     expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
   });
 
-  it('global headcount cap: denies even a trusted global-scope creator, with no approval', async () => {
+  it('caps are inert (M08 AC#1): creating past the old 25-agent / 10-report limits still proceeds', async () => {
+    // The org-size/fan-out brakes no longer enforce — even with the old env vars
+    // set tiny AND the (now-unread) counters far over the retired thresholds, the
+    // create runs. Under the flat topology these caps were a hard company ceiling
+    // M03 auto-provision would hit at the 11th hire.
+    process.env.NANOCLAW_MAX_AGENTS = '1';
+    process.env.NANOCLAW_MAX_DIRECT_REPORTS = '1';
     mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
-    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({})); // == DEFAULT_MAX_AGENTS
+    mockGetAllAgentGroups.mockReturnValue(new Array(100).fill({})); // >> old 25
+    mockCountChildren.mockReturnValue(50); // >> old 10
     await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
-    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
     expect(mockRequestApproval).not.toHaveBeenCalled();
-    expect(mockNotifyWrite).toHaveBeenCalled(); // told the agent why
   });
 
-  it('direct-report cap: denies when the creator already has the max children', async () => {
-    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
-    mockCountChildren.mockReturnValue(10); // == DEFAULT_MAX_DIRECT_REPORTS
-    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
-    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
-  });
-
-  it('confined (group) scope over cap: denied EARLY — no approval is requested', async () => {
-    // Pins the handleCreateAgent early check: a doomed hire must not bother an admin.
+  it('confined (group) scope over the old cap: now reaches approval (no early cap short-circuit)', async () => {
+    // The early cap denial is gone — a confined create over the retired limit now
+    // takes the normal approval path instead of being denied up front.
     mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
-    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({}));
+    mockGetAllAgentGroups.mockReturnValue(new Array(100).fill({}));
     await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
-    expect(mockRequestApproval).not.toHaveBeenCalled();
+    expect(mockRequestApproval).toHaveBeenCalledTimes(1);
     expect(mockCreateAgentGroup).not.toHaveBeenCalled();
-  });
-
-  it('allow boundary: one slot under each cap still proceeds (off-by-one guard)', async () => {
-    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
-    mockGetAllAgentGroups.mockReturnValue(new Array(24).fill({})); // 24 < 25
-    mockCountChildren.mockReturnValue(9); // 9 < 10
-    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
-    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
-  });
-
-  it('deny message explains the cap (not an empty/garbled notice)', async () => {
-    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
-    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({}));
-    await handleCreateAgent({ name: 'Scout', instructions: 'x' }, SESSION);
-    const msg = JSON.parse((mockNotifyWrite.mock.calls[0][2] as { content: string }).content).text as string;
-    expect(msg).toContain('headcount cap');
-  });
-
-  it('confined path is capped at CREATION (applyCreateAgent), not only at request time', async () => {
-    // The cap must hold even if the request slipped under at approval time and
-    // headcount filled up before the admin approved.
-    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({}));
-    const notify = vi.fn();
-    await applyCreateAgent({ session: SESSION, payload: { name: 'Scout' }, notify } as never);
-    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalled();
   });
 });
 
@@ -287,15 +265,19 @@ describe('performCreateAgent — returns the new id + Circle provisioning option
     });
   });
 
-  it('returns null (and never binds) when a recruiting cap declines the create', async () => {
-    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({})); // == DEFAULT_MAX_AGENTS
+  it('creates + binds past the old cap — the authoritative chokepoint no longer enforces org-size', async () => {
+    // The cap that used to return null here is removed (M08). Even far over the
+    // retired 25-agent limit, the create succeeds and the principal binds.
+    process.env.NANOCLAW_MAX_AGENTS = '1';
+    mockGetAllAgentGroups.mockReturnValue(new Array(100).fill({}));
     const notify = vi.fn();
     const created = await performCreateAgent('Scout', 'help', SESSION, SOURCE_GROUP, notify, {
       principalUserId: 'google:sub-123',
     });
 
-    expect(created).toBeNull();
-    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
-    expect(mockAddMember).not.toHaveBeenCalled();
+    expect(created).not.toBeNull();
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
+    expect(mockAddMember).toHaveBeenCalledTimes(1);
+    delete process.env.NANOCLAW_MAX_AGENTS;
   });
 });

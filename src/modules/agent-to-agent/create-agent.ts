@@ -15,7 +15,7 @@
 import path from 'path';
 
 import { GROUPS_DIR } from '../../config.js';
-import { createAgentGroup, getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
+import { createAgentGroup, getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
 import { getContainerConfig, updateContainerConfigScalars } from '../../db/container-configs.js';
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
@@ -29,7 +29,7 @@ import { writeSessionMessage } from '../../session-manager.js';
 import type { AgentGroup, Session } from '../../types.js';
 import { requestApproval, type ApprovalHandler } from '../approvals/index.js';
 import { addMember } from '../permissions/db/agent-group-members.js';
-import { countChildren, createDestination, getDestinationByName, normalizeName } from './db/agent-destinations.js';
+import { createDestination, getDestinationByName, normalizeName } from './db/agent-destinations.js';
 import { writeDestinations } from './write-destinations.js';
 
 /**
@@ -46,56 +46,18 @@ export interface PerformCreateAgentOptions {
 }
 
 /**
- * Recruiting headcount caps (Path A, slice 1; plan §5.4 "Controls").
- *
- * Hard structural anti-runaway brakes on the AUTONOMOUS create path —
- * `create_agent`, both the trusted global-CoS direct route and the confined
- * route after approval — so a buggy self-recruiting loop or a prompt-injected
- * agent can't fan out unbounded ("Paperclip slop"). Distinct from the authz
- * gate (which only decides direct-create vs approval): caps bound the company's
- * SIZE and a single manager's FAN-OUT regardless of who is trusted.
- *
- * SCOPE: this guards the agent-initiated path. The other two creators are
- * human-gated and intentionally exempt — `channel-approval.createNewAgentGroup`
- * (a person approves each channel wiring) and the `ncl groups create` CLI.
- * Neither is an autonomous-runaway vector; see the note on createNewAgentGroup.
- *
- * Configurable via env (generous defaults). FAIL-OPEN + log: this is the
- * load-bearing create path, so a counting bug must never brick hiring.
- * NOTE: depth cap is a separate later slice (needs an ancestor walk).
+ * Org-size / fan-out caps REMOVED (M08 cap-removal half, owner-approved
+ * 2026-06-27). The dev-log/0034 brakes (`NANOCLAW_MAX_AGENTS=25`,
+ * `NANOCLAW_MAX_DIRECT_REPORTS=10`) were anti-runaway limits on the autonomous
+ * create path, but under the multi-user platform agent creation is gated by
+ * Google SSO (a human hire per agent, D10), so an org-size ceiling now blocks
+ * legitimate growth — under the flat topology (D30, every employee a direct
+ * report of the one main agent) the 10-direct-report cap was a hard 10-employee
+ * company ceiling M03 auto-provision would hit at the 11th hire. The env vars
+ * are now inert. The runaway threat (a compromised SSO account / provisioning
+ * loop spawning thousands fast) is handled by M08's rate-guard — a fast-follow,
+ * NOT this slice. See SPEC-M08; tracked as the M08 rate-guard remainder.
  */
-const DEFAULT_MAX_AGENTS = 25;
-const DEFAULT_MAX_DIRECT_REPORTS = 10;
-
-/** Parse a positive-integer env cap; fall back to the default on unset/0/NaN. */
-function envCap(name: string, fallback: number): number {
-  const n = Number(process.env[name]);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
-}
-
-/**
- * Returns a human-readable rejection reason if a hard recruiting cap is hit,
- * else null. Counts are best-effort: any failure fails OPEN (allow + log) so a
- * query bug can't stop the company from hiring.
- */
-function recruitingCapViolation(creatorId: string): string | null {
-  try {
-    const maxAgents = envCap('NANOCLAW_MAX_AGENTS', DEFAULT_MAX_AGENTS);
-    const total = getAllAgentGroups().length;
-    if (total >= maxAgents) {
-      return `company headcount cap reached (${total}/${maxAgents}). Decommission an agent or ask the owner to raise NANOCLAW_MAX_AGENTS.`;
-    }
-    const maxReports = envCap('NANOCLAW_MAX_DIRECT_REPORTS', DEFAULT_MAX_DIRECT_REPORTS);
-    const reports = countChildren(creatorId);
-    if (reports >= maxReports) {
-      return `direct-report cap reached (${reports}/${maxReports}) for this manager. Delegate via a sub-manager or ask the owner to raise NANOCLAW_MAX_DIRECT_REPORTS.`;
-    }
-    return null;
-  } catch (err) {
-    log.error('recruiting cap check failed — allowing create (fail-open)', { err, creatorId });
-    return null;
-  }
-}
 
 function notifyAgent(session: Session, text: string): void {
   writeSessionMessage(session.agent_group_id, session.id, {
@@ -153,16 +115,6 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
   if (!sourceGroup) {
     notifyAgent(session, 'create_agent failed: source agent group not found.');
     log.warn('create_agent failed: missing source group', { sessionAgentGroup: session.agent_group_id, name });
-    return;
-  }
-
-  // Early cap check: don't bother an admin with an approval for a hire that the
-  // authoritative check in performCreateAgent would reject anyway. (That check
-  // is the real enforcement — the confined path reaches creation via
-  // applyCreateAgent → performCreateAgent, NOT back through here.)
-  const earlyCapMsg = recruitingCapViolation(sourceGroup.id);
-  if (earlyCapMsg) {
-    notifyAgent(session, `create_agent denied: ${earlyCapMsg}`);
     return;
   }
 
@@ -227,17 +179,6 @@ export async function performCreateAgent(
   notify: (text: string) => void,
   options: PerformCreateAgentOptions = {},
 ): Promise<AgentGroup | null> {
-  // AUTHORITATIVE recruiting cap check — the chokepoint BOTH paths share
-  // (global-scope direct create AND confined create-after-approval). The
-  // early check in handleCreateAgent is only UX; this one actually enforces
-  // (e.g. several "under-cap-at-request" hires approved over time).
-  const capMsg = recruitingCapViolation(sourceGroup.id);
-  if (capMsg) {
-    notify(`create_agent denied: ${capMsg}`);
-    log.warn('create_agent blocked by recruiting cap', { creator: sourceGroup.id, name, reason: capMsg });
-    return null;
-  }
-
   const localName = normalizeName(name);
 
   // Collision in the creator's destination namespace
