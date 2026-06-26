@@ -179,6 +179,90 @@ describe('groups CLI delete cascades dependent rows (#2525)', () => {
     expect(count('SELECT COUNT(*) AS c FROM messaging_groups WHERE id = ?', MGID)).toBe(1);
   });
 
+  it('cascades agent_message_policies (both directions) alongside channel/sender approvals + questions', async () => {
+    // Regression for the latent prod bug (SWEEP-3 §S2): the cascade missed
+    // agent_message_policies (migration 017), whose from_/to_agent_group_id BOTH
+    // FK-reference agent_groups(id). With foreign_keys=ON, the first decommission
+    // of any agent that ever had a message policy OR a channel/sender approval
+    // throws SQLITE_CONSTRAINT_FOREIGNKEY and aborts the whole transaction. Two
+    // groups + two policy rows (victim→other AND other→victim) exercise both
+    // WHERE legs — a self-edge would not prove "both directions".
+    const VICTIM = 'ag-policy-victim';
+    const OTHER = 'ag-policy-other';
+    const SID = 'sess-policy-1';
+    const MGID = 'mg-policy';
+    const UID = 'tg:77';
+
+    createAgentGroup({ id: VICTIM, name: 'victim', folder: 'pv', agent_provider: null, created_at: now() });
+    createAgentGroup({ id: OTHER, name: 'other', folder: 'po', agent_provider: null, created_at: now() });
+    createSession({
+      id: SID,
+      agent_group_id: VICTIM,
+      messaging_group_id: null,
+      thread_id: null,
+      agent_provider: null,
+      status: 'active',
+      container_status: 'stopped',
+      last_active: null,
+      created_at: now(),
+    });
+
+    const db = getDb();
+    db.prepare(`INSERT INTO users (id, kind, display_name, created_at) VALUES (?, 'telegram', 'someone', ?)`).run(
+      UID,
+      now(),
+    );
+    db.prepare(
+      `INSERT INTO messaging_groups (id, channel_type, platform_id, instance, name, is_group, unknown_sender_policy, created_at)
+       VALUES (?, 'telegram', 'tg-p', 'telegram', 'chat', 1, 'strict', ?)`,
+    ).run(MGID, now());
+
+    // The four FK row-classes the team-lead named: channel approval, sender
+    // approval, a pending question, and a message policy (both directions).
+    db.prepare(
+      `INSERT INTO pending_channel_approvals (messaging_group_id, agent_group_id, original_message, approver_user_id, created_at)
+       VALUES (?, ?, '{}', ?, ?)`,
+    ).run(MGID, VICTIM, UID, now());
+    db.prepare(
+      `INSERT INTO pending_sender_approvals (id, messaging_group_id, agent_group_id, sender_identity, sender_name, original_message, approver_user_id, created_at)
+       VALUES ('psa-p', ?, ?, 'tg:99', 'them', '{}', ?, ?)`,
+    ).run(MGID, VICTIM, UID, now());
+    db.prepare(
+      `INSERT INTO pending_questions (question_id, session_id, message_out_id, title, options_json, created_at)
+       VALUES (?, ?, 'mout-p', 'q', '[]', ?)`,
+    ).run('q-p', SID, now());
+    db.prepare(
+      `INSERT INTO agent_message_policies (from_agent_group_id, to_agent_group_id, approver, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(VICTIM, OTHER, UID, now());
+    db.prepare(
+      `INSERT INTO agent_message_policies (from_agent_group_id, to_agent_group_id, approver, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(OTHER, VICTIM, UID, now());
+
+    const resp = await dispatch(
+      { id: 'req-del-p', command: 'groups-delete', args: { id: VICTIM } },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    const data = (resp as { ok: true; data: { removed: Record<string, number> } }).data;
+    expect(data.removed.agent_message_policies).toBe(2);
+
+    // Victim gone; OTHER survives; every policy row referencing victim is gone.
+    expect(count('SELECT COUNT(*) AS c FROM agent_groups WHERE id = ?', VICTIM)).toBe(0);
+    expect(count('SELECT COUNT(*) AS c FROM agent_groups WHERE id = ?', OTHER)).toBe(1);
+    expect(
+      count(
+        'SELECT COUNT(*) AS c FROM agent_message_policies WHERE from_agent_group_id = ? OR to_agent_group_id = ?',
+        VICTIM,
+        VICTIM,
+      ),
+    ).toBe(0);
+    expect(count('SELECT COUNT(*) AS c FROM pending_channel_approvals WHERE agent_group_id = ?', VICTIM)).toBe(0);
+    expect(count('SELECT COUNT(*) AS c FROM pending_sender_approvals WHERE agent_group_id = ?', VICTIM)).toBe(0);
+  });
+
   it('removes polymorphic agent_destinations that point at the deleted group', async () => {
     const A = 'ag-a';
     const B = 'ag-b';

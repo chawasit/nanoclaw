@@ -24,6 +24,7 @@ const mockWriteDestinations = vi.fn();
 const mockNotifyWrite = vi.fn();
 const mockGetAllAgentGroups = vi.fn();
 const mockCountChildren = vi.fn();
+const mockAddMember = vi.fn();
 
 vi.mock('../approvals/index.js', () => ({
   requestApproval: (...a: unknown[]) => mockRequestApproval(...a),
@@ -60,6 +61,9 @@ vi.mock('./db/agent-destinations.js', () => ({
   normalizeName: (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
   countChildren: (...a: unknown[]) => mockCountChildren(...a),
 }));
+vi.mock('../permissions/db/agent-group-members.js', () => ({
+  addMember: (...a: unknown[]) => mockAddMember(...a),
+}));
 // notifyAgent writes to the session inbound.db + wakes the container; stub both.
 vi.mock('../../session-manager.js', () => ({
   writeSessionMessage: (...a: unknown[]) => mockNotifyWrite(...a),
@@ -71,9 +75,11 @@ vi.mock('../../db/sessions.js', () => ({
   getSession: (id: string) => ({ id, agent_group_id: 'ag-1' }),
 }));
 
-import { handleCreateAgent, applyCreateAgent } from './create-agent.js';
+import { handleCreateAgent, applyCreateAgent, performCreateAgent } from './create-agent.js';
+import type { AgentGroup } from '../../types.js';
 
 const SESSION = { id: 'sess-1', agent_group_id: 'ag-1' } as Session;
+const SOURCE_GROUP = { id: 'ag-1', name: 'AG-1', folder: 'ag-1', agent_provider: null, created_at: '' } as AgentGroup;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -249,5 +255,47 @@ describe('handleCreateAgent — recruiting headcount caps (Path A slice 1)', () 
     await applyCreateAgent({ session: SESSION, payload: { name: 'Scout' }, notify } as never);
     expect(mockCreateAgentGroup).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalled();
+  });
+});
+
+describe('performCreateAgent — returns the new id + Circle provisioning options (S1)', () => {
+  it('returns the created AgentGroup with a real minted id', async () => {
+    const notify = vi.fn();
+    const created = await performCreateAgent('Scout', 'help', SESSION, SOURCE_GROUP, notify);
+
+    expect(created).not.toBeNull();
+    expect(created!.id).toMatch(/^ag-/);
+    expect(created!.name).toBe('Scout');
+    expect(mockCreateAgentGroup).toHaveBeenCalledTimes(1);
+    // No principal supplied → the binding stays dormant.
+    expect(mockAddMember).not.toHaveBeenCalled();
+  });
+
+  it('binds the supplied principal to the new agent group and threads the id back', async () => {
+    const notify = vi.fn();
+    const created = await performCreateAgent('Scout', 'help', SESSION, SOURCE_GROUP, notify, {
+      principalUserId: 'google:sub-123',
+      domain: 'example.com',
+    });
+
+    expect(created).not.toBeNull();
+    expect(mockAddMember).toHaveBeenCalledTimes(1);
+    expect(mockAddMember.mock.calls[0][0]).toMatchObject({
+      user_id: 'google:sub-123',
+      agent_group_id: created!.id,
+      added_by: null,
+    });
+  });
+
+  it('returns null (and never binds) when a recruiting cap declines the create', async () => {
+    mockGetAllAgentGroups.mockReturnValue(new Array(25).fill({})); // == DEFAULT_MAX_AGENTS
+    const notify = vi.fn();
+    const created = await performCreateAgent('Scout', 'help', SESSION, SOURCE_GROUP, notify, {
+      principalUserId: 'google:sub-123',
+    });
+
+    expect(created).toBeNull();
+    expect(mockCreateAgentGroup).not.toHaveBeenCalled();
+    expect(mockAddMember).not.toHaveBeenCalled();
   });
 });

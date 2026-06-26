@@ -28,8 +28,22 @@ import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { AgentGroup, Session } from '../../types.js';
 import { requestApproval, type ApprovalHandler } from '../approvals/index.js';
+import { addMember } from '../permissions/db/agent-group-members.js';
 import { countChildren, createDestination, getDestinationByName, normalizeName } from './db/agent-destinations.js';
 import { writeDestinations } from './write-destinations.js';
+
+/**
+ * Optional Circle-provisioning extras for {@link performCreateAgent}. Dormant on
+ * the existing autonomous create paths (both callers omit it); supplied only by
+ * the future Circle SSO-provisioning chain (M03/M08) that needs the new id and a
+ * principal binding back. `principalUserId`, when given, binds that human
+ * principal to the new agent group via `agent_group_members` (the same table
+ * M22/M03 use for owner↔CoS); `domain` is recorded for audit/log context only.
+ */
+export interface PerformCreateAgentOptions {
+  principalUserId?: string;
+  domain?: string;
+}
 
 /**
  * Recruiting headcount caps (Path A, slice 1; plan §5.4 "Controls").
@@ -199,14 +213,20 @@ export const applyCreateAgent: ApprovalHandler = async ({ session, payload, noti
  * admin approval via applyCreateAgent) — never call this from an unauthorized
  * path, as it performs privileged central-DB writes a confined container is
  * otherwise barred from.
+ *
+ * Returns the newly-created {@link AgentGroup} (incl. its minted id) on success,
+ * or `null` if a guard (recruiting cap, name collision, path traversal) declined
+ * the create — those paths already `notify()` the caller. Existing call sites
+ * ignore the return and are unaffected; Circle provisioning consumes the id.
  */
-async function performCreateAgent(
+export async function performCreateAgent(
   name: string,
   instructions: string | null,
   session: Session,
   sourceGroup: AgentGroup,
   notify: (text: string) => void,
-): Promise<void> {
+  options: PerformCreateAgentOptions = {},
+): Promise<AgentGroup | null> {
   // AUTHORITATIVE recruiting cap check — the chokepoint BOTH paths share
   // (global-scope direct create AND confined create-after-approval). The
   // early check in handleCreateAgent is only UX; this one actually enforces
@@ -215,7 +235,7 @@ async function performCreateAgent(
   if (capMsg) {
     notify(`create_agent denied: ${capMsg}`);
     log.warn('create_agent blocked by recruiting cap', { creator: sourceGroup.id, name, reason: capMsg });
-    return;
+    return null;
   }
 
   const localName = normalizeName(name);
@@ -223,7 +243,7 @@ async function performCreateAgent(
   // Collision in the creator's destination namespace
   if (getDestinationByName(sourceGroup.id, localName)) {
     notify(`Cannot create agent "${name}": you already have a destination named "${localName}".`);
-    return;
+    return null;
   }
 
   // Derive a safe folder name, deduplicated globally across agent_groups.folder
@@ -240,7 +260,7 @@ async function performCreateAgent(
   if (!resolvedPath.startsWith(resolvedGroupsDir + path.sep)) {
     notify(`Cannot create agent "${name}": invalid folder path.`);
     log.error('create_agent path traversal attempt', { folder, resolvedPath });
-    return;
+    return null;
   }
 
   const agentGroupId = `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -301,6 +321,22 @@ async function performCreateAgent(
   // tries to send to the newly-created child.
   writeDestinations(session.agent_group_id, session.id);
 
+  // Circle provisioning (dormant on the autonomous paths): bind the supplied
+  // human principal to the new agent group. Same membership table M22/M03 use;
+  // caller owns ensuring the `users` row exists (FK).
+  if (options.principalUserId) {
+    addMember({ user_id: options.principalUserId, agent_group_id: agentGroupId, added_by: null, added_at: now });
+  }
+
   notify(`Agent "${localName}" created. You can now message it with send_message({ to: "${localName}", text: "…" }).`);
-  log.info('Agent group created', { agentGroupId, name, localName, folder, parent: sourceGroup.id });
+  log.info('Agent group created', {
+    agentGroupId,
+    name,
+    localName,
+    folder,
+    parent: sourceGroup.id,
+    principal: options.principalUserId ?? null,
+    domain: options.domain ?? null,
+  });
+  return newGroup;
 }
