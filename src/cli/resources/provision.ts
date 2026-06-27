@@ -112,7 +112,13 @@ function existingBoundAgent(principal: string): string | null {
 const inFlight = new Set<string>();
 
 function refuse(reason: ProvisionRefusal, platformId: string): ProvisionResult {
-  return { ok: false, agentGroupId: null, created: false, refusals: [reason], lane: { platformId, messagingGroupId: null } };
+  return {
+    ok: false,
+    agentGroupId: null,
+    created: false,
+    refusals: [reason],
+    lane: { platformId, messagingGroupId: null },
+  };
 }
 
 /**
@@ -243,7 +249,13 @@ export async function provision(args: ProvisionArgs, ctx: CallerContext): Promis
   // Idempotency (D5 one-human-one-agent): an existing binding short-circuits.
   const existing = existingBoundAgent(principal);
   if (existing) {
-    return { ok: true, agentGroupId: existing, created: false, refusals: [], lane: { platformId, messagingGroupId: null } };
+    return {
+      ok: true,
+      agentGroupId: existing,
+      created: false,
+      refusals: [],
+      lane: { platformId, messagingGroupId: null },
+    };
   }
 
   if (inFlight.has(principal)) return refuse('concurrent-provision', platformId);
@@ -252,7 +264,13 @@ export async function provision(args: ProvisionArgs, ctx: CallerContext): Promis
     // Re-check inside the lock (TOCTOU): another flight may have just bound it.
     const recheck = existingBoundAgent(principal);
     if (recheck) {
-      return { ok: true, agentGroupId: recheck, created: false, refusals: [], lane: { platformId, messagingGroupId: null } };
+      return {
+        ok: true,
+        agentGroupId: recheck,
+        created: false,
+        refusals: [],
+        lane: { platformId, messagingGroupId: null },
+      };
     }
 
     const mainGroup = getAgentGroup(cfg.mainAgentId);
@@ -291,8 +309,19 @@ export async function provision(args: ProvisionArgs, ctx: CallerContext): Promis
     const mgId = wireWebLane(created.id, platformId, now);
     await mintSession(platformId);
 
-    log.info('provision: agent created + bound + wired', { agentGroupId: created.id, principal, domain: args.domain, lane: mgId });
-    return { ok: true, agentGroupId: created.id, created: true, refusals: [], lane: { platformId, messagingGroupId: mgId } };
+    log.info('provision: agent created + bound + wired', {
+      agentGroupId: created.id,
+      principal,
+      domain: args.domain,
+      lane: mgId,
+    });
+    return {
+      ok: true,
+      agentGroupId: created.id,
+      created: true,
+      refusals: [],
+      lane: { platformId, messagingGroupId: mgId },
+    };
   } finally {
     inFlight.delete(principal);
   }

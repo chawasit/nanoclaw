@@ -66,7 +66,13 @@ beforeEach(() => {
   mockGetAgentGroup.mockReturnValue({ id: 'ag-cos', name: 'CoS', folder: 'cos', agent_provider: null, created_at: '' });
   mockFindSession.mockReturnValue({ id: 'sess-cos', agent_group_id: 'ag-cos' });
   mockGetContainerConfig.mockReturnValue({ env: '{}', blocked_hosts: '[]' });
-  mockPerformCreateAgent.mockResolvedValue({ id: 'ag-new', name: 'alice', folder: 'alice', agent_provider: null, created_at: '' });
+  mockPerformCreateAgent.mockResolvedValue({
+    id: 'ag-new',
+    name: 'alice',
+    folder: 'alice',
+    agent_provider: null,
+    created_at: '',
+  });
 });
 
 afterEach(() => {
