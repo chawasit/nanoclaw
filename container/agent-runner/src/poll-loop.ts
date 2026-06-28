@@ -30,6 +30,14 @@ const ACTIVE_POLL_INTERVAL_MS = 500;
 const CORRUPTION_STREAK_EXIT = 10;
 
 /**
+ * The sleep-orchestrator's end-of-day completion marker (mirrors the literal in
+ * services/sleep-orchestrator/core.js `COMPLETION_MARKER`). A turn that emits it
+ * is the agent signalling it finished its EOD summary — an intentional,
+ * delivery-free completion — so it must be exempt from the undelivered-reply nudge.
+ */
+const SLEEP_SUMMARY_COMPLETE_MARKER = '[[SLEEP_SUMMARY_COMPLETE]]';
+
+/**
  * True for SQLite errors that indicate a corrupt READ view — almost always a
  * cross-mount page-cache coherency issue on Docker Desktop macOS rather than
  * actual file damage (host-side integrity_check passes). Reopening the DB
@@ -510,9 +518,13 @@ export async function processQuery(
         const deliveredThisTurn = deliveryCount() > deliveriesBaseline;
         if (deliveredThisTurn) deliveredThisStream = true;
         const scratchpad = event.text ? stripInternalTags(event.text).trim() : '';
+        // The sleep-orchestrator end-of-day completion marker is an INTENTIONAL
+        // delivery-free turn (the agent consolidates memory + writes handoff.md,
+        // no send_message) — so a turn that emits it must NOT be nudged.
+        const sleepSummaryComplete = event.text?.includes(SLEEP_SUMMARY_COMPLETE_MARKER) ?? false;
         // Stream-scoped: a text-only turn after ANY earlier delivery on this
         // stream is not an undelivered reply (see deliveredThisStream).
-        const undelivered = !deliveredThisStream && scratchpad.length > 0;
+        const undelivered = !deliveredThisStream && scratchpad.length > 0 && !sleepSummaryComplete;
 
         if (!deliveredThisTurn && event.isError === true && event.text) {
           // Non-retryable error turn (e.g. a 403 billing_error) that delivered
