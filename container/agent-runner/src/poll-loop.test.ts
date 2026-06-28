@@ -572,6 +572,14 @@ describe('send_message nudge (undelivered turns)', () => {
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(0);
   });
+
+  it('a turn emitting [[SLEEP_SUMMARY_COMPLETE]] is NOT nudged (intentional EOD completion, no send)', async () => {
+    seedDest('telegram', 'telegram', 'chan-1');
+    const { query, pushes } = oneShot('Memory consolidated and handoff.md written.\n[[SLEEP_SUMMARY_COMPLETE]]');
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
 });
 
 describe('delivered turn (send_message) is not nudged', () => {
