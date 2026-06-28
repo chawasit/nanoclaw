@@ -668,16 +668,17 @@ function buildSendNudge(scratchpad: string): string {
   const looksLikeWrapper = /<message\s+to=/i.test(scratchpad) || looksLikeMalformedMessageAttempt(scratchpad);
   if (looksLikeWrapper) {
     return (
-      `<nanoclaw_reminders>Your reply was NOT delivered. It looks like you wrote a <message to="…"> tag — ` +
-      `that wrapper is no longer a delivery channel; plain text and <message> tags are scratchpad only. ` +
-      `To actually send, call the send_message tool — send_message({ to: "name", text: "…" }) (use send_file for files). ` +
-      `Your destinations: ${names}. Re-send your reply now via send_message.</nanoclaw_reminders>`
+      `<nanoclaw_reminders>Heads up: your last turn produced text but nothing was delivered — and it looks like you wrote a ` +
+      `<message to="…"> tag, which is no longer a delivery channel (plain text and <message> tags are scratchpad only). ` +
+      `If you meant to send that, deliver it now: send_message({ to: "name", text: "…" }) (send_file for files). Your destinations: ${names}. ` +
+      `If you already delivered it another way, or there is nothing to send, this reminder is a false alarm — do NOT re-send; just end your turn.</nanoclaw_reminders>`
     );
   }
   return (
-    `<nanoclaw_reminders>Your last turn produced text but nothing was delivered — you did not call the send_message tool, ` +
-    `so your reply was not sent. Plain text is scratchpad; only send_message (and send_file) deliver. ` +
-    `Call send_message({ to: "name", text: "…" }) to send it. Your destinations: ${names}. Re-send it now.</nanoclaw_reminders>`
+    `<nanoclaw_reminders>Heads up: your last turn produced text but nothing was delivered — no send_message/send_file call was recorded. ` +
+    `If that text was a reply you still owe someone, deliver it now: send_message({ to: "name", text: "…" }) (send_file for files). Your destinations: ${names}. ` +
+    `But if you ALREADY sent it, or that text was just an internal note or acknowledgment with nothing to deliver, this reminder is a false alarm — ` +
+    `do NOT re-send; simply end your turn.</nanoclaw_reminders>`
   );
 }
 
