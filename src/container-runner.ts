@@ -22,7 +22,13 @@ import {
 import { materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
-import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, isRootlessDocker, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import {
+  CONTAINER_RUNTIME_BIN,
+  hostGatewayArgs,
+  isRootlessDocker,
+  readonlyMountArgs,
+  stopContainer,
+} from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
@@ -462,6 +468,9 @@ async function buildContainerArgs(
   // root (still namespace-confined, not real host root) in that case.
   if (isRootlessDocker()) {
     args.push('--user', '0:0');
+    // claude refuses --dangerously-skip-permissions as UID 0; the container is a
+    // sandbox (namespace-confined, egress-locked), so signal that to allow it.
+    args.push('-e', 'IS_SANDBOX=1');
     args.push('-e', 'HOME=/home/node');
   } else {
     const hostUid = process.getuid?.();
