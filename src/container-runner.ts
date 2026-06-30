@@ -22,7 +22,7 @@ import {
 import { materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
-import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, isRootlessDocker, readonlyMountArgs, stopContainer } from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
@@ -454,12 +454,22 @@ async function buildContainerArgs(
     args.push(...hostGatewayArgs());
   }
 
-  // User mapping
-  const hostUid = process.getuid?.();
-  const hostGid = process.getgid?.();
-  if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    args.push('--user', `${hostUid}:${hostGid}`);
+  // User mapping. Under rootless Docker, the daemon's user-namespace
+  // remapping makes container UID 0 the only in-container UID that
+  // resolves to the real host user — the image's baked-in `node` user
+  // (1000) and any --user passthrough both land in the dockerd subuid
+  // range instead, losing write access to host-owned session files. Pin
+  // root (still namespace-confined, not real host root) in that case.
+  if (isRootlessDocker()) {
+    args.push('--user', '0:0');
     args.push('-e', 'HOME=/home/node');
+  } else {
+    const hostUid = process.getuid?.();
+    const hostGid = process.getgid?.();
+    if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
+      args.push('--user', `${hostUid}:${hostGid}`);
+      args.push('-e', 'HOME=/home/node');
+    }
   }
 
   // Volume mounts

@@ -25,6 +25,33 @@ export function readonlyMountArgs(hostPath: string, containerPath: string): stri
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
+let rootlessCache: boolean | undefined;
+
+/**
+ * Detect rootless Docker (dockerd running under the invoking user's own
+ * namespace, e.g. via `dockerd-rootless.sh`). Under rootless Docker, the
+ * daemon's user-namespace remapping (`/etc/subuid`) means container UID 0
+ * is the *only* in-container UID that resolves to the real host user —
+ * any other UID (including a `--user <hostUid>` passthrough) lands in the
+ * subuid range and loses write access to host-owned bind mounts. Cached
+ * for the process lifetime since rootless-ness can't change mid-run.
+ */
+export function isRootlessDocker(): boolean {
+  if (rootlessCache !== undefined) return rootlessCache;
+  try {
+    const output = execSync(`${CONTAINER_RUNTIME_BIN} info --format '{{json .SecurityOptions}}'`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+    rootlessCache = /name=rootless/.test(output);
+  } catch (err) {
+    log.warn('Failed to detect rootless Docker, assuming rootful', { err });
+    rootlessCache = false;
+  }
+  return rootlessCache;
+}
+
 /** Stop a container by name. Uses execFileSync to avoid shell injection. */
 export function stopContainer(name: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
