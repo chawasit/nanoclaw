@@ -149,7 +149,9 @@ describe('reply_to + quoted_message rendering', () => {
     const result = formatMessages(getPendingMessages());
     expect(result).toContain('from="A &amp; B"');
     expect(result).toContain('&lt;script&gt;');
-    expect(result).toContain('&quot;xss&quot;');
+    // Body TEXT keeps quotes literal (only & < > are structural between tags) —
+    // JSON-bearing messages must reach the model unmangled.
+    expect(result).toContain('alert("xss")');
   });
 });
 
@@ -161,7 +163,8 @@ describe('XML escaping', () => {
     });
     const result = formatMessages(getPendingMessages());
     expect(result).toContain('sender="A &amp; B &lt;Co&gt;"');
-    expect(result).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+    // Attribute values fully escaped (incl. quotes); body text keeps quotes literal.
+    expect(result).toContain('&lt;script&gt;alert("xss")&lt;/script&gt;');
   });
 });
 

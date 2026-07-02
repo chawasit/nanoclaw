@@ -178,7 +178,7 @@ function formatSingleChat(msg: MessageInRow): string {
 
   const fromAttr = originAttr(msg);
 
-  return `<message${idAttr}${fromAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
+  return `<message${idAttr}${fromAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXmlText(text)}${attachmentsSuffix}</message>`;
 }
 
 /**
@@ -236,7 +236,7 @@ function formatReplyContext(replyTo: any): string {
   const sender = replyTo.sender;
   const text = replyTo.text;
   if (!sender || !text) return '';
-  return `\n  <quoted_message from="${escapeXml(sender)}">${escapeXml(text)}</quoted_message>\n`;
+  return `\n  <quoted_message from="${escapeXml(sender)}">${escapeXmlText(text)}</quoted_message>\n`;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -248,9 +248,9 @@ function formatAttachments(attachments: any[] | undefined): string {
     const localPath = a.localPath ? `/workspace/${a.localPath}` : '';
     const url = a.url || '';
     if (localPath) {
-      return `[${type}: ${escapeXml(name)} — saved to ${escapeXml(localPath)}]`;
+      return `[${type}: ${escapeXmlText(name)} — saved to ${escapeXmlText(localPath)}]`;
     }
-    return url ? `[${type}: ${escapeXml(name)} (${escapeXml(url)})]` : `[${type}: ${escapeXml(name)}]`;
+    return url ? `[${type}: ${escapeXmlText(name)} (${escapeXmlText(url)})]` : `[${type}: ${escapeXmlText(name)}]`;
   });
   return '\n' + parts.join('\n');
 }
@@ -266,6 +266,16 @@ function parseContent(json: string): any {
 
 function escapeXml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Escape for TEXT content between tags — only `& < >` are structural there.
+ * Quotes are left literal so JSON-bearing messages (e.g. Circle a2ui-action
+ * payloads, or any user text with quotes) reach the model unmangled instead of
+ * as `&quot;`-soup. Attribute values keep the full `escapeXml`.
+ */
+function escapeXmlText(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**
