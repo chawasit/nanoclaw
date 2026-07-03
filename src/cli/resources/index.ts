@@ -16,3 +16,5 @@ import './approvals.js';
 import './sessions.js';
 import './provision.js';
 import './create-agent.js';
+import './erase-user.js';
+import './retention-prune.js';
