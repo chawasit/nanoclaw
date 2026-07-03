@@ -21,7 +21,12 @@ import { register } from '../registry.js';
 export interface CreateAgentArgs {
   parentAgentGroupId: string;
   name: string;
-  roleBrief?: RoleBrief;
+  /**
+   * Either the structured spine RoleBrief (rendered via `renderRoleBrief`) or a
+   * plain free-text brief (Circle's admin form sends a string) used verbatim as
+   * the new agent's instructions.
+   */
+  roleBrief?: RoleBrief | string;
   model?: string;
 }
 
@@ -35,12 +40,18 @@ export function parseCreateAgentArgs(raw: Record<string, unknown>): CreateAgentA
   if (!parentAgentGroupId) throw new Error('parentAgentGroupId is required');
   if (!name) throw new Error('name is required');
 
-  let roleBrief: RoleBrief | undefined;
+  let roleBrief: RoleBrief | string | undefined;
   if (raw.roleBrief != null) {
-    if (typeof raw.roleBrief !== 'object') throw new Error('roleBrief must be an object');
-    const v = validateRoleBrief(raw.roleBrief as Record<string, unknown>);
-    if (!v.ok) throw new Error('invalid roleBrief — ' + v.errors.join('; '));
-    roleBrief = v.brief;
+    if (typeof raw.roleBrief === 'string') {
+      // Circle's admin form sends a free-text brief — used verbatim as instructions.
+      roleBrief = raw.roleBrief.trim() || undefined;
+    } else if (typeof raw.roleBrief === 'object') {
+      const v = validateRoleBrief(raw.roleBrief as Record<string, unknown>);
+      if (!v.ok) throw new Error('invalid roleBrief — ' + v.errors.join('; '));
+      roleBrief = v.brief;
+    } else {
+      throw new Error('roleBrief must be a string or a RoleBrief object');
+    }
   }
 
   const model = typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : undefined;
@@ -71,7 +82,8 @@ export async function createAgent(args: CreateAgentArgs, ctx: CallerContext): Pr
     return { ok: false, error: 'parent_not_active' };
   }
 
-  const instructions = args.roleBrief ? renderRoleBrief(args.roleBrief) : null;
+  const instructions =
+    typeof args.roleBrief === 'string' ? args.roleBrief : args.roleBrief ? renderRoleBrief(args.roleBrief) : null;
   const created = await performCreateAgent(args.name, instructions, parentSession, parentGroup, (text) =>
     log.info('create_agent notice', { text }),
   );

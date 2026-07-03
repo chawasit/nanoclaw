@@ -69,6 +69,20 @@ describe('parseCreateAgentArgs', () => {
       parseCreateAgentArgs({ parentAgentGroupId: 'ag-parent', name: 'alice', roleBrief: { mandate: 'x' } }),
     ).toThrow(/reportsTo|doneWhen/);
   });
+
+  it('accepts a free-text (string) roleBrief — the Circle admin-form shape', () => {
+    const args = parseCreateAgentArgs({
+      parentAgentGroupId: 'ag-parent',
+      name: 'alice',
+      roleBrief: '  You handle research digests.  ',
+    });
+    expect(args.roleBrief).toBe('You handle research digests.');
+  });
+
+  it('drops a blank string roleBrief instead of storing empty instructions', () => {
+    const args = parseCreateAgentArgs({ parentAgentGroupId: 'ag-parent', name: 'alice', roleBrief: '   ' });
+    expect(args.roleBrief).toBeUndefined();
+  });
 });
 
 describe('create_agent — host-only gate', () => {
@@ -120,6 +134,14 @@ describe('create_agent — happy path', () => {
     const instructions = mockPerformCreateAgent.mock.calls[0][1] as string;
     expect(instructions).toContain('Role brief');
     expect(instructions).toContain('do stuff');
+  });
+
+  it('passes a free-text roleBrief through verbatim as instructions', async () => {
+    await createAgent(
+      { parentAgentGroupId: 'ag-parent', name: 'alice', roleBrief: 'You handle research digests.' },
+      HOST,
+    );
+    expect(mockPerformCreateAgent.mock.calls[0][1]).toBe('You handle research digests.');
   });
 
   it('sets the model on the new group when given', async () => {
