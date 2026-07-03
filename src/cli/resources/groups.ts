@@ -192,6 +192,42 @@ registerResource({
         return presentConfig(updated);
       },
     },
+    'config update-env': {
+      access: 'approval',
+      description:
+        'Merge env vars into a group container config, preserving untouched existing keys — the seam a ' +
+        'sibling service (Circle M16) calls over ncl.sock to inject a per-agent LiteLLM virtual key. ' +
+        'Requires `ncl groups restart` to take effect. Use --id <group-id> --env <object> [--blockedHosts <array>].',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const env = args.env as Record<string, string> | undefined;
+        if (!env || typeof env !== 'object' || Object.keys(env).length === 0) {
+          throw new Error('--env is required');
+        }
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+
+        // MERGE, never overwrite — existing keys survive unless the patch overrides them.
+        const existingEnv = JSON.parse(row.env) as Record<string, string>;
+        const mergedEnv = { ...existingEnv, ...env };
+        updateContainerConfigJson(id, 'env', mergedEnv);
+
+        const blockedHosts = args.blockedHosts as string[] | undefined;
+        if (blockedHosts !== undefined) {
+          updateContainerConfigJson(id, 'blocked_hosts', blockedHosts);
+        }
+
+        // Echo keys, not secret values, back over the wire.
+        return {
+          agent_group_id: id,
+          updated: true,
+          env_keys: Object.keys(mergedEnv),
+          blocked_hosts: blockedHosts ?? (JSON.parse(getContainerConfig(id)!.blocked_hosts) as string[]),
+        };
+      },
+    },
     'config add-mcp-server': {
       access: 'approval',
       description:
