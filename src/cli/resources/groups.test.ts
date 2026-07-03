@@ -27,6 +27,14 @@ vi.mock('../../config.js', async () => {
   return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-cli-groups' };
 });
 
+// The `access: 'approval'` branch in dispatch.ts calls requestApproval() for
+// non-host callers — stub it so the host-only-guard test doesn't touch real
+// delivery/notification plumbing.
+vi.mock('../../modules/approvals/index.js', () => ({
+  registerApprovalHandler: vi.fn(),
+  requestApproval: vi.fn().mockResolvedValue(undefined),
+}));
+
 const TEST_DIR = '/tmp/nanoclaw-test-cli-groups';
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, getDb } from '../../db/index.js';
@@ -300,5 +308,134 @@ describe('groups CLI delete cascades dependent rows (#2525)', () => {
     expect(resp.ok).toBe(false);
     expect((resp as { ok: false; error: { code: string; message: string } }).error.code).toBe('handler-error');
     expect((resp as { ok: false; error: { code: string; message: string } }).error.message).toMatch(/not found/i);
+  });
+});
+
+/**
+ * `ncl groups config update-env` — M16 seam: a sibling service (Circle) patches
+ * an agent's container_configs.env over ncl.sock (e.g. to inject its own
+ * LiteLLM virtual key) without clobbering existing env keys. Gated exactly
+ * like the other config-mutation verbs (`access: 'approval'` — inline for the
+ * host caller, approval-pending for an agent caller).
+ */
+describe('groups-config-update-env (#M16)', () => {
+  const GID = 'ag-env-test';
+
+  beforeEach(() => {
+    const db = initTestDb();
+    runMigrations(db);
+
+    createAgentGroup({ id: GID, name: 'env-test', folder: 'env-test', agent_provider: null, created_at: now() });
+    db.prepare(
+      `INSERT INTO container_configs
+         (agent_group_id, provider, model, effort, image_tag, assistant_name, max_messages_per_prompt,
+          skills, mcp_servers, packages_apt, packages_npm, additional_mounts, env, blocked_hosts, cli_scope, updated_at)
+       VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL, '"all"', '{}', '[]', '[]', '[]', ?, '[]', 'group', ?)`,
+    ).run(GID, JSON.stringify({ EXISTING_KEY: 'keep-me', ANTHROPIC_API_KEY: 'old-key' }), now());
+  });
+
+  function envOf(id: string): Record<string, string> {
+    const row = getDb().prepare('SELECT env FROM container_configs WHERE agent_group_id = ?').get(id) as {
+      env: string;
+    };
+    return JSON.parse(row.env);
+  }
+
+  function blockedHostsOf(id: string): string[] {
+    const row = getDb().prepare('SELECT blocked_hosts FROM container_configs WHERE agent_group_id = ?').get(id) as {
+      blocked_hosts: string;
+    };
+    return JSON.parse(row.blocked_hosts);
+  }
+
+  it('merges the patch into existing env — untouched keys survive, overridden keys change', async () => {
+    const resp = await dispatch(
+      {
+        id: 'req-env-1',
+        command: 'groups-config-update-env',
+        args: { id: GID, env: { ANTHROPIC_API_KEY: 'new-key', LITELLM_VIRTUAL_KEY: 'sk-abc' } },
+      },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    expect(envOf(GID)).toEqual({
+      EXISTING_KEY: 'keep-me',
+      ANTHROPIC_API_KEY: 'new-key',
+      LITELLM_VIRTUAL_KEY: 'sk-abc',
+    });
+  });
+
+  it('sets blocked_hosts when blockedHosts is provided (and leaves it untouched when omitted)', async () => {
+    const resp = await dispatch(
+      {
+        id: 'req-env-2',
+        command: 'groups-config-update-env',
+        args: { id: GID, env: { FOO: 'bar' }, blockedHosts: ['api.anthropic.com', 'evil.example'] },
+      },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(true);
+    expect(blockedHostsOf(GID)).toEqual(['api.anthropic.com', 'evil.example']);
+
+    const resp2 = await dispatch(
+      { id: 'req-env-2b', command: 'groups-config-update-env', args: { id: GID, env: { FOO: 'baz' } } },
+      { caller: 'host' },
+    );
+    expect(resp2.ok).toBe(true);
+    // No blockedHosts passed this time — must stay whatever it was, not be cleared.
+    expect(blockedHostsOf(GID)).toEqual(['api.anthropic.com', 'evil.example']);
+  });
+
+  it('rejects a missing --id', async () => {
+    const resp = await dispatch(
+      { id: 'req-env-3', command: 'groups-config-update-env', args: { env: { FOO: 'bar' } } },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.message).toMatch(/id.*required/i);
+  });
+
+  it('rejects missing or empty --env', async () => {
+    const respMissing = await dispatch(
+      { id: 'req-env-4', command: 'groups-config-update-env', args: { id: GID } },
+      { caller: 'host' },
+    );
+    expect(respMissing.ok).toBe(false);
+    if (!respMissing.ok) expect(respMissing.error.message).toMatch(/env.*required/i);
+
+    const respEmpty = await dispatch(
+      { id: 'req-env-4b', command: 'groups-config-update-env', args: { id: GID, env: {} } },
+      { caller: 'host' },
+    );
+    expect(respEmpty.ok).toBe(false);
+  });
+
+  it('is host-only: an agent caller gets approval-pending, and the env is NOT mutated inline', async () => {
+    const SID = 'sess-env-guard';
+    createSession({
+      id: SID,
+      agent_group_id: GID,
+      messaging_group_id: null,
+      thread_id: null,
+      agent_provider: null,
+      status: 'active',
+      container_status: 'stopped',
+      last_active: null,
+      created_at: now(),
+    });
+
+    const resp = await dispatch(
+      {
+        id: 'req-env-5',
+        command: 'groups-config-update-env',
+        args: { id: GID, env: { SHOULD_NOT_APPLY: 'x' } },
+      },
+      { caller: 'agent', sessionId: SID, agentGroupId: GID, messagingGroupId: 'mg-x' },
+    );
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.code).toBe('approval-pending');
+    expect(envOf(GID)).not.toHaveProperty('SHOULD_NOT_APPLY');
   });
 });
