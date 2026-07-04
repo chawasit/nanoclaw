@@ -17,8 +17,14 @@
  * HARD RULE: style varies; values, mandate, reporting chain, and safety guardrails
  * never do — those live in the role brief + base-agent-contract SOP and always win.
  *
- * CREATE-ONLY: call from the creation path AFTER initGroupFilesystem (which writes
- * CLAUDE.local.md). Idempotent via a marker guard — never re-rolls or double-appends.
+ * Appends into `/workspace/agent/SOUL.md` (the Agent Home values/continuity
+ * file — see agent-home.ts), NOT CLAUDE.local.md: working style is part of
+ * "who you are", which is what SOUL.md is for. The mandate stays in
+ * CLAUDE.local.md (create_agent `instructions`), unchanged.
+ *
+ * CREATE-ONLY: call from the creation path AFTER initGroupFilesystem (which
+ * seeds SOUL.md via seedAgentHomeFiles). Idempotent via a marker guard — never
+ * re-rolls or double-appends.
  */
 import fs from 'fs';
 import path from 'path';
@@ -93,12 +99,12 @@ export function renderPersonalityBlock(traits: Record<string, string>): string {
 }
 
 export function seedPersonality(group: AgentGroup, rng: () => number = rngForId(group.id)): void {
-  const file = path.resolve(GROUPS_DIR, group.folder, 'CLAUDE.local.md');
+  const file = path.resolve(GROUPS_DIR, group.folder, 'SOUL.md');
   let existing = '';
   try {
     existing = fs.readFileSync(file, 'utf-8');
   } catch {
-    // CLAUDE.local.md not created yet (e.g. a surfaces-owning provider) — seed fresh.
+    // SOUL.md not created yet (e.g. a surfaces-owning provider) — seed fresh.
   }
   if (existing.includes(MARKER)) return; // already seeded — never re-roll
 

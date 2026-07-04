@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { seedAgentHomeFiles, upsertAgentHomeManual } from './agent-home.js';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { ensureContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
@@ -88,6 +89,22 @@ export function initGroupFilesystem(
     if (!fs.existsSync(claudeLocalFile)) {
       fs.writeFileSync(claudeLocalFile, seed ? seed + '\n' : '');
       initialized.push('CLAUDE.local.md');
+    }
+
+    // Agent Home (openclaw-inspired workspace memory + orientation layer):
+    // seed IDENTITY/USER/SOUL/MEMORY/BOOTSTRAP.md (write-once, never clobbers
+    // an agent's own edits) and the CLAUDE.local.md operating-manual block
+    // (regenerated below the mandate seed on every call, so template fixes
+    // reach existing agents on their next spawn — see agent-home.ts). Runs on
+    // every spawn (this function is idempotent and called defensively from
+    // buildMounts()), which doubles as automatic backfill for pre-existing
+    // groups without needing a one-off migration.
+    const homeFilesWritten = seedAgentHomeFiles(groupDir);
+    if (homeFilesWritten.length > 0) {
+      initialized.push(...homeFilesWritten.map((f) => `agent-home:${f}`));
+    }
+    if (upsertAgentHomeManual(groupDir)) {
+      initialized.push('CLAUDE.local.md (agent-home manual)');
     }
   } else if (seed) {
     const seedFile = path.join(groupDir, 'memory', 'memories', 'imported-agent-memory.md');

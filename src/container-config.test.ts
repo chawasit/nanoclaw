@@ -1,3 +1,4 @@
+import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetGroup = vi.fn();
@@ -26,12 +27,18 @@ vi.mock('./leader-mounts.js', () => ({
   applyLeaderWorkspaceMounts: (mounts: unknown) => mounts,
 }));
 vi.mock('./leader-tools.js', () => ({ disallowedToolsForRole: () => [] }));
+const files: Record<string, string> = {};
 vi.mock('fs', () => ({
   default: {
     existsSync: () => true,
     mkdirSync: () => undefined,
+    readFileSync: (p: string) => {
+      if (p in files) return files[p];
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    },
     writeFileSync: (p: string, data: string) => {
       writes[p] = data;
+      files[p] = data;
     },
   },
 }));
@@ -62,6 +69,7 @@ function baseRow(overrides: Record<string, unknown> = {}) {
 
 describe('materializeContainerJson proxy-env auto-injection', () => {
   beforeEach(() => {
+    Object.keys(files).forEach((k) => delete files[k]);
     mockGetGroup.mockReturnValue(GROUP);
     mockGetChildren.mockReturnValue([]); // not a leader
     mockGetMembers.mockReturnValue([]); // no bound human by default
@@ -124,6 +132,7 @@ describe('materializeContainerJson proxy-env auto-injection', () => {
 
 describe('materializeContainerJson primaryUser resolution', () => {
   beforeEach(() => {
+    Object.keys(files).forEach((k) => delete files[k]);
     mockGetGroup.mockReturnValue(GROUP);
     mockGetChildren.mockReturnValue([]);
     mockGetConfig.mockReturnValue(baseRow());
@@ -182,5 +191,49 @@ describe('materializeContainerJson primaryUser resolution', () => {
     ]);
     const cfg = materializeContainerJson('ag-test');
     expect(cfg.primaryUser).toBeUndefined();
+  });
+
+  it('backfills /workspace/agent/USER.md placeholders once primaryUser resolves (Agent Home)', () => {
+    const userFile = path.join('/tmp/nanoclaw-test-groups', 'test', 'USER.md');
+    files[userFile] = [
+      '# Your user',
+      '',
+      '- **Name:** (unknown — filled in automatically once your workspace is wired to a person)',
+      '- **How to address them:** (unknown)',
+      '- **Email:** (unknown)',
+      '',
+    ].join('\n');
+    mockGetMembers.mockReturnValue([
+      { user_id: 'google:123', agent_group_id: 'ag-test', added_by: null, added_at: 't0' },
+    ]);
+    mockGetUser.mockReturnValue({
+      id: 'google:123',
+      kind: 'google',
+      display_name: 'alice@trirat.co',
+      created_at: 't0',
+    });
+    mockGetDestinations.mockReturnValue([
+      { agent_group_id: 'ag-test', local_name: 'user', target_type: 'channel', target_id: 'mg-1', created_at: 't0' },
+    ]);
+    mockGetMessagingGroup.mockImplementation((id: string) =>
+      id === 'mg-1' ? { id: 'mg-1', channel_type: 'cli', platform_id: 'web:google:123', instance: 'cli' } : undefined,
+    );
+
+    materializeContainerJson('ag-test');
+
+    expect(files[userFile]).toContain('- **Name:** alice@trirat.co');
+    expect(files[userFile]).toContain('- **How to address them:** alice@trirat.co');
+    expect(files[userFile]).toContain('- **Email:** alice@trirat.co');
+  });
+
+  it('never touches USER.md when there is no bound human (nothing to backfill)', () => {
+    const userFile = path.join('/tmp/nanoclaw-test-groups', 'test', 'USER.md');
+    const stub = '# Your user\n\n- **Name:** (unknown — filled in automatically once your workspace is wired to a person)\n';
+    files[userFile] = stub;
+    mockGetMembers.mockReturnValue([]);
+
+    materializeContainerJson('ag-test');
+
+    expect(files[userFile]).toBe(stub);
   });
 });

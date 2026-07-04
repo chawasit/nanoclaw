@@ -17,8 +17,10 @@
  * mounts in base-profile. (Private/working files live in the durable group folder
  * at /workspace/agent, which is always mounted regardless of the NAS.)
  *
- * CREATE-ONLY: call from the creation path AFTER initGroupFilesystem +
- * seedPersonality (both write CLAUDE.local.md). Never from the spawn path.
+ * CREATE-ONLY: call from the creation path AFTER initGroupFilesystem (which
+ * writes CLAUDE.local.md) + seedPersonality (which now writes
+ * /workspace/agent/SOUL.md — see personality.ts / agent-home.ts). Never from
+ * the spawn path.
  */
 import fs from 'fs';
 import path from 'path';

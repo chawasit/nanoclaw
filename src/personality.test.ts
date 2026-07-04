@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 const group = (folder: string, id = 'ag-x') => ({ id, folder }) as any;
-const localFile = (folder: string) => path.join(TMP, folder, 'CLAUDE.local.md');
+const soulFile = (folder: string) => path.join(TMP, folder, 'SOUL.md');
 const flavor = (id: string) => Object.values(samplePersonality(rngForId(id))).join(',');
 
 describe('samplePersonality', () => {
@@ -68,32 +68,32 @@ describe('renderPersonalityBlock', () => {
 });
 
 describe('seedPersonality', () => {
-  it('appends a style block after an existing role seed', () => {
+  it('appends a style block after existing SOUL.md content (core truths)', () => {
     fs.mkdirSync(path.join(TMP, 'w1'), { recursive: true });
-    fs.writeFileSync(localFile('w1'), 'You are the data analyst. Report to the MD.\n');
+    fs.writeFileSync(soulFile('w1'), '# Soul\n\nYou are a guest with access.\n');
     seedPersonality(group('w1'), () => 0.9);
-    const out = fs.readFileSync(localFile('w1'), 'utf-8');
-    expect(out).toContain('data analyst');
+    const out = fs.readFileSync(soulFile('w1'), 'utf-8');
+    expect(out).toContain('guest with access');
     expect(out).toContain('<!-- base-personality -->');
-    expect(out.indexOf('data analyst')).toBeLessThan(out.indexOf('base-personality'));
+    expect(out.indexOf('guest with access')).toBeLessThan(out.indexOf('base-personality'));
   });
 
-  it('creates CLAUDE.local.md when none exists', () => {
+  it('creates SOUL.md when none exists', () => {
     seedPersonality(group('w2'), () => 0.1);
-    expect(fs.readFileSync(localFile('w2'), 'utf-8')).toContain('**terse**');
+    expect(fs.readFileSync(soulFile('w2'), 'utf-8')).toContain('**terse**');
   });
 
   it('defaults to id-seeded rng (no ambient randomness)', () => {
     seedPersonality(group('w4', 'ag-deterministic'));
-    const out = fs.readFileSync(localFile('w4'), 'utf-8');
+    const out = fs.readFileSync(soulFile('w4'), 'utf-8');
     expect(out).toContain('**' + samplePersonality(rngForId('ag-deterministic')).verbosity + '**');
   });
 
   it('is idempotent — never re-rolls or double-appends (marker guard)', () => {
     seedPersonality(group('w3'), () => 0.1);
-    const first = fs.readFileSync(localFile('w3'), 'utf-8');
+    const first = fs.readFileSync(soulFile('w3'), 'utf-8');
     seedPersonality(group('w3'), () => 0.9);
-    const second = fs.readFileSync(localFile('w3'), 'utf-8');
+    const second = fs.readFileSync(soulFile('w3'), 'utf-8');
     expect(second).toBe(first);
     expect(second.split('<!-- base-personality -->').length - 1).toBe(1);
   });

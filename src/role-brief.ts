@@ -6,9 +6,10 @@
  *     + optional toolLimits/statusExpectation).
  *   - renderRoleBrief produces the markdown block, ending in a precedence line.
  *
- * create_agent renders a valid brief into the new agent[39m\[39ms `instructions`, so it lands
- * ABOVE the sampled working-style block via the normal CLAUDE.local.md seed —
- * provider-agnostic, no direct file writes here.
+ * create_agent renders a valid brief into the new agent's `instructions`, so it
+ * seeds `/workspace/agent/CLAUDE.local.md` via the normal mandate seed. The
+ * sampled working-style block (personality.ts) lands separately, in
+ * `/workspace/agent/SOUL.md` — provider-agnostic, no direct file writes here.
  */
 export interface RoleBrief {
   reportsTo: string;
