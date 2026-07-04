@@ -83,7 +83,9 @@ async function main(): Promise<void> {
   for (const row of pending) {
     const conflict = getDestinationByName(row.agent_group_id, NEW_NAME);
     if (conflict) {
-      console.warn(`SKIP ${row.agent_group_id}: a \`${NEW_NAME}\` destination already exists (manual collision) — leaving \`${OLD_NAME}\` in place.`);
+      console.warn(
+        `SKIP ${row.agent_group_id}: a \`${NEW_NAME}\` destination already exists (manual collision) — leaving \`${OLD_NAME}\` in place.`,
+      );
       skipped++;
       continue;
     }
@@ -117,7 +119,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`\nBackfill complete: ${renamed} destination(s) renamed, ${relabeled} lane(s) relabeled, ${skipped} skipped.`);
+  console.log(
+    `\nBackfill complete: ${renamed} destination(s) renamed, ${relabeled} lane(s) relabeled, ${skipped} skipped.`,
+  );
 }
 
 main().catch((err) => {

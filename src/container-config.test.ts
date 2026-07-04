@@ -135,8 +135,15 @@ describe('materializeContainerJson primaryUser resolution', () => {
   });
 
   it('populates primaryUser from the earliest bound member + their cli reply lane', () => {
-    mockGetMembers.mockReturnValue([{ user_id: 'google:123', agent_group_id: 'ag-test', added_by: null, added_at: 't0' }]);
-    mockGetUser.mockReturnValue({ id: 'google:123', kind: 'google', display_name: 'alice@trirat.co', created_at: 't0' });
+    mockGetMembers.mockReturnValue([
+      { user_id: 'google:123', agent_group_id: 'ag-test', added_by: null, added_at: 't0' },
+    ]);
+    mockGetUser.mockReturnValue({
+      id: 'google:123',
+      kind: 'google',
+      display_name: 'alice@trirat.co',
+      created_at: 't0',
+    });
     mockGetDestinations.mockReturnValue([
       { agent_group_id: 'ag-test', local_name: 'parent', target_type: 'agent', target_id: 'ag-cos', created_at: 't0' },
       { agent_group_id: 'ag-test', local_name: 'user', target_type: 'channel', target_id: 'mg-1', created_at: 't0' },
@@ -161,8 +168,15 @@ describe('materializeContainerJson primaryUser resolution', () => {
   });
 
   it('omits primaryUser when the bound human has no resolvable cli reply lane', () => {
-    mockGetMembers.mockReturnValue([{ user_id: 'google:123', agent_group_id: 'ag-test', added_by: null, added_at: 't0' }]);
-    mockGetUser.mockReturnValue({ id: 'google:123', kind: 'google', display_name: 'alice@trirat.co', created_at: 't0' });
+    mockGetMembers.mockReturnValue([
+      { user_id: 'google:123', agent_group_id: 'ag-test', added_by: null, added_at: 't0' },
+    ]);
+    mockGetUser.mockReturnValue({
+      id: 'google:123',
+      kind: 'google',
+      display_name: 'alice@trirat.co',
+      created_at: 't0',
+    });
     mockGetDestinations.mockReturnValue([
       { agent_group_id: 'ag-test', local_name: 'parent', target_type: 'agent', target_id: 'ag-cos', created_at: 't0' },
     ]);
