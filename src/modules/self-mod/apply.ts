@@ -101,6 +101,7 @@ export const applyAddMcpServer: ApprovalHandler = async ({ session, payload, use
     command: payload.command as string,
     args: (payload.args as string[]) || [],
     env: (payload.env as Record<string, string>) || {},
+    ...(payload.instructions ? { instructions: payload.instructions as string } : {}),
   };
   updateContainerConfigJson(agentGroup.id, 'mcp_servers', servers);
 
