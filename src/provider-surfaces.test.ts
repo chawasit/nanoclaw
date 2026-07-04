@@ -66,9 +66,19 @@ describe('initGroupFilesystem agent surfaces', () => {
 
     const groupDir = path.join(GROUPS_DIR, ag.folder);
     const claudeDir = path.join(DATA_DIR, 'v2-sessions', ag.id, '.claude-shared');
-    expect(fs.readFileSync(path.join(groupDir, 'CLAUDE.local.md'), 'utf-8')).toBe('hello\n');
+    // The mandate seed is preserved verbatim; the Agent Home operating-manual
+    // block is appended below it (see agent-home.ts) — no longer an exact match.
+    const claudeLocal = fs.readFileSync(path.join(groupDir, 'CLAUDE.local.md'), 'utf-8');
+    expect(claudeLocal.startsWith('hello\n')).toBe(true);
+    expect(claudeLocal).toContain('agent-home-manual:start');
     expect(fs.existsSync(path.join(claudeDir, 'settings.json'))).toBe(true);
     expect(fs.existsSync(path.join(claudeDir, 'skills'))).toBe(true);
+    // Agent Home stub files land alongside CLAUDE.local.md in the group dir.
+    expect(fs.existsSync(path.join(groupDir, 'IDENTITY.md'))).toBe(true);
+    expect(fs.existsSync(path.join(groupDir, 'USER.md'))).toBe(true);
+    expect(fs.existsSync(path.join(groupDir, 'SOUL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(groupDir, 'MEMORY.md'))).toBe(true);
+    expect(fs.existsSync(path.join(groupDir, 'BOOTSTRAP.md'))).toBe(true);
   });
 
   it('writes the seed into the memory scaffold — never CLAUDE.* — for a provider with its own surfaces', () => {
@@ -125,7 +135,10 @@ describe('initGroupFilesystem deferred seed (.seed.md)', () => {
 
     initGroupFilesystem(ag, {}); // no inline instructions — must read .seed.md
 
-    expect(fs.readFileSync(path.join(groupDir, 'CLAUDE.local.md'), 'utf-8')).toBe('seeded identity\n');
+    // The seed is preserved verbatim; the Agent Home manual is appended below it.
+    expect(fs.readFileSync(path.join(groupDir, 'CLAUDE.local.md'), 'utf-8').startsWith('seeded identity\n')).toBe(
+      true,
+    );
     expect(fs.existsSync(path.join(groupDir, '.seed.md'))).toBe(false);
   });
 

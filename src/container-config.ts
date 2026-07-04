@@ -11,6 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { applyPrimaryUserToUserFile } from './agent-home.js';
 import { GROUPS_DIR } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
@@ -90,7 +91,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
  * agents with no bound human (e.g. internal/company agents) or no resolvable
  * reply lane, so container.json simply omits the field.
  */
-function resolvePrimaryUser(agentGroupId: string): ContainerConfig['primaryUser'] {
+export function resolvePrimaryUser(agentGroupId: string): ContainerConfig['primaryUser'] {
   const [firstMember] = getMembers(agentGroupId);
   if (!firstMember) return undefined;
 
@@ -141,6 +142,18 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   // fixes the misroute where an agent sent a report to `parent` instead of
   // its owner). Recomputed every spawn; absent for agents with no bound human.
   config.primaryUser = resolvePrimaryUser(agentGroupId);
+
+  // Agent Home (agent-home.ts): once the primary user resolves, backfill it
+  // into /workspace/agent/USER.md's placeholder Name/How-to-address/Email
+  // lines. Deferred to spawn time (not group-init/creation) because the
+  // Circle provisioning flow wires the human binding + reply destination
+  // AFTER the group's filesystem is scaffolded (see provision.ts wireWebLane)
+  // — resolvePrimaryUser has nothing to resolve until then. Only touches
+  // lines still at their placeholder text, so an agent's own USER.md edits
+  // always win.
+  if (config.primaryUser) {
+    applyPrimaryUserToUserFile(path.join(GROUPS_DIR, group.folder), config.primaryUser);
+  }
 
   // Auto-compact window follows the model tier each spawn (cloud models hold far
   // more than the 165K default; local gemma must stay at 165K). Explicit env wins.
