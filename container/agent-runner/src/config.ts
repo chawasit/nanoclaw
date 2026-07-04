@@ -9,6 +9,13 @@ import fs from 'fs';
 
 const CONFIG_PATH = '/workspace/agent/container.json';
 
+/** The agent's bound human — destination = the local_name of their reply lane. */
+export interface PrimaryUser {
+  name: string;
+  email?: string;
+  destination: string;
+}
+
 export interface RunnerConfig {
   provider: string;
   assistantName: string;
@@ -19,6 +26,7 @@ export interface RunnerConfig {
   model?: string;
   effort?: string;
   disallowedTools?: string[];
+  primaryUser?: PrimaryUser;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -49,6 +57,7 @@ export function loadConfig(): RunnerConfig {
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
     disallowedTools: (raw.disallowedTools as string[]) || undefined,
+    primaryUser: (raw.primaryUser as PrimaryUser) || undefined,
   };
 
   return _config;
