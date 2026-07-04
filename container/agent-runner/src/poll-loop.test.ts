@@ -627,18 +627,17 @@ describe('delivered turn (send_message) is not nudged', () => {
     expect(JSON.parse(out[0].content).text).toBe('delivered via tool');
   });
 
-  it('a terminal "Done" turn after a delivery does NOT nudge (the live false positive)', async () => {
+  it('a plain-text reply AFTER an earlier delivery IS nudged now (re-arming latch, dev-log/0189)', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
     const pushes: string[] = [];
-    // The live circle-main pattern (nanoclaw.error.log): turn 1 delivers the real
-    // reply via send_message ("Delivered (id 29)"), then a later result event is a
-    // terminal text-only "Done" with no further delivery. (In prod the second turn
-    // arrives via a pushed spurious follow-up — an empty / post-send echo inbound;
-    // a separate, manually-verified RED run confirmed the pushed-follow-up variant
-    // also nudged on the old per-turn code and is fixed here. We keep the committed
-    // test push-free so it stays fast and doesn't perturb the timing-flaky
-    // slash-command test under full-suite load.) STREAM-scoped delivery tracking
-    // means an earlier delivery on the stream suppresses the nudge for the "Done".
+    // The owner-reported live gemma-4 CoS pattern (2026-07-05): the agent delivers
+    // an early reply via send_message, then on a LATER turn answers in plain text
+    // and never calls the send tool. Under the OLD stream-scoped suppression
+    // (`deliveredThisStream`, dev-log/0135) that later reply was NEVER nudged and
+    // the user's chat went dark. The re-arming latch fixes this: a delivery
+    // re-arms the nudge, so the next dry turn IS caught. Accepted, bounded
+    // trade-off: this also re-admits the dev-log/0135 trailing-"Done" false
+    // positive — one non-coercive nudge, capped by MAX_NUDGES_PER_STREAM.
     async function* events(): AsyncGenerator<ProviderEvent> {
       yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
       writeMessageOut({
@@ -651,7 +650,7 @@ describe('delivered turn (send_message) is not nudged', () => {
       });
       recordDelivery();
       yield { type: 'result', text: 'Delivered (id 29).' } as ProviderEvent;
-      yield { type: 'result', text: 'Done.' } as ProviderEvent; // terminal, no new delivery
+      yield { type: 'result', text: 'here is the next answer, undelivered' } as ProviderEvent;
     }
     const query = {
       push: (m: string) => {
@@ -662,7 +661,45 @@ describe('delivered turn (send_message) is not nudged', () => {
       abort: () => {},
     } as AgentQuery;
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
-    // The reply was already delivered on this stream — the trailing "Done" must NOT nudge.
-    expect(pushes.some((p) => p.includes('nothing was delivered'))).toBe(false);
+    // The delivery re-armed the nudge → the later undelivered reply is caught.
+    expect(pushes.some((p) => p.includes('nothing was delivered'))).toBe(true);
+  });
+
+  it('caps nudges per stream (MAX_NUDGES_PER_STREAM) so a flaky model cannot loop into OOM', async () => {
+    seedDest('telegram', 'telegram', 'chan-1');
+    const pushes: string[] = [];
+    // Worst case: 8 deliver→undeliver cycles. Each delivery re-arms the latch, so
+    // without a cap every cycle would nudge (8×). The absolute per-stream cap (5)
+    // bounds it — the backstop against a nudge<->retext loop feeding the code-137
+    // OOM seen with gemma.
+    const CYCLES = 8;
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
+      for (let i = 0; i < CYCLES; i++) {
+        writeMessageOut({
+          id: `out-cap-${i}`,
+          kind: 'chat',
+          platform_id: 'chan-1',
+          channel_type: 'telegram',
+          thread_id: null,
+          content: JSON.stringify({ text: `delivery ${i}` }),
+        });
+        recordDelivery();
+        yield { type: 'result', text: `sent ${i}` } as ProviderEvent; // re-arms
+        yield { type: 'result', text: `undelivered reply ${i}` } as ProviderEvent; // nudge candidate
+      }
+    }
+    const query = {
+      push: (m: string) => {
+        pushes.push(m);
+      },
+      end: () => {},
+      events: events(),
+      abort: () => {},
+    } as AgentQuery;
+    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    const nudges = pushes.filter((p) => p.includes('nothing was delivered')).length;
+    // Capped at 5 despite 8 undelivered turns — proves the OOM backstop holds.
+    expect(nudges).toBe(5);
   });
 });

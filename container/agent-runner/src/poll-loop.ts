@@ -343,7 +343,6 @@ export async function processQuery(
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
-  let unwrappedNudged = false;
   // Delivery-aware turn tracking (send_message-only protocol, dev-log/0083).
   // The ONLY way a reply reaches a destination is the send_message / send_file
   // tool; result-text <message> wrappers are no longer dispatched. We snapshot
@@ -351,20 +350,27 @@ export async function processQuery(
   // turn's `result` event: if the agent delivered nothing yet produced visible
   // text, that text is undelivered scratchpad and we nudge it to call the tool.
   let deliveriesBaseline = deliveryCount();
-  // STREAM-scoped delivery flag: has the agent delivered anything (send_message /
-  // send_file) at any point on this open query? The per-turn delta above
-  // re-baselines after every result event, which false-fired the nudge in the
-  // live pattern: turn 1 delivers the reply, a spurious follow-up (an empty /
-  // post-send echo inbound) is PUSHED, then turn 2 is a terminal text-only result
-  // (e.g. just "Done") — read per-turn that looks undelivered and got nudged,
-  // even though the reply was already sent. So the agent re-sent and the spine
-  // skipped the dup (wasted round-trip). Tracking delivery for the whole stream
-  // fixes it. Accepted trade-off (false NEGATIVE): once anything is delivered on
-  // a stream, a genuinely-forgotten plain-text reply to a LATER follow-up on the
-  // same stream won't nudge — acceptable, since the nudge is a safety net and an
-  // agent that just delivered is unlikely to forget the very next send, whereas
-  // the false POSITIVE was actively harming prod (re-send loops, code-137 exits).
-  let deliveredThisStream = false;
+  // Nudge latch that RE-ARMS on every delivery (dev-log/0189, supersedes the old
+  // stream-scoped `deliveredThisStream` from dev-log/0135). The prior design
+  // suppressed the nudge for the WHOLE rest of an open query once anything was
+  // delivered — which on a flaky local model (gemma-4 as the live CoS) produced a
+  // real false NEGATIVE: the agent delivers an early reply, then on a LATER
+  // follow-up answers in plain text and never calls send_message, and no nudge
+  // ever fires because the stream already saw a delivery. So a whole reply is left
+  // undelivered and the user's chat goes dark (owner-reported 2026-07-05, verified
+  // in the live CoS transcript). We now track per TURN (`deliveredThisTurn`) and
+  // only latch the nudge until the NEXT delivery re-arms it — so a
+  // delivered-then-stopped agent is caught again, while a genuinely-idle
+  // never-delivering turn is still nudged at most once (the latch holds until a
+  // delivery clears it). Accepted trade-off (the dev-log/0135 false POSITIVE
+  // returns, bounded): a trailing text-only "Done" right after a real send can
+  // nudge once — the non-coercive nudge wording (dev-log/0134: "if you already
+  // sent it, this is a false alarm, do NOT re-send, just end your turn") absorbs
+  // it. MAX_NUDGES_PER_STREAM is a hard backstop against any nudge<->retext loop
+  // feeding the OOM (code-137) seen with gemma.
+  let nudgedSinceLastDelivery = false;
+  let nudgeCount = 0;
+  const MAX_NUDGES_PER_STREAM = 5;
   // Prompt queue for the exchange hook — each result event consumes the
   // oldest unanswered prompt, except a wrapping-retry result, which answers
   // the same prompt again. Unused (and unmaintained) when the provider
@@ -447,7 +453,9 @@ export async function processQuery(
         const keptIds = keep.map((m) => m.id);
         const prompt = formatMessages(keep);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
-        unwrappedNudged = false;
+        // A genuine new inbound re-arms the nudge (like a delivery does) so the
+        // fresh turn it starts can be caught if it goes undelivered.
+        nudgedSinceLastDelivery = false;
         query.push(prompt);
         archivePrompts.push(prompt);
         markCompleted(keptIds);
@@ -516,15 +524,19 @@ export async function processQuery(
         // that isn't <internal> scratchpad, with no delivery, means the agent
         // left its reply undelivered — nudge it to use the tool.
         const deliveredThisTurn = deliveryCount() > deliveriesBaseline;
-        if (deliveredThisTurn) deliveredThisStream = true;
+        // A delivery this turn RE-ARMS the nudge: the agent proved it can still
+        // reach the send tool, so a later dry turn on the same stream should be
+        // caught again (see the latch rationale above).
+        if (deliveredThisTurn) nudgedSinceLastDelivery = false;
         const scratchpad = event.text ? stripInternalTags(event.text).trim() : '';
         // The sleep-orchestrator end-of-day completion marker is an INTENTIONAL
         // delivery-free turn (the agent consolidates memory + writes handoff.md,
         // no send_message) — so a turn that emits it must NOT be nudged.
         const sleepSummaryComplete = event.text?.includes(SLEEP_SUMMARY_COMPLETE_MARKER) ?? false;
-        // Stream-scoped: a text-only turn after ANY earlier delivery on this
-        // stream is not an undelivered reply (see deliveredThisStream).
-        const undelivered = !deliveredThisStream && scratchpad.length > 0 && !sleepSummaryComplete;
+        // Per-TURN undelivered: this turn produced visible (non-<internal>) text
+        // and did not itself deliver. The stream-wide suppression is gone; the
+        // nudge is instead gated by the re-arming latch + the per-stream cap below.
+        const undelivered = !deliveredThisTurn && scratchpad.length > 0 && !sleepSummaryComplete;
 
         if (!deliveredThisTurn && event.isError === true && event.text) {
           // Non-retryable error turn (e.g. a 403 billing_error) that delivered
@@ -540,11 +552,17 @@ export async function processQuery(
           });
           archivePrompts.shift();
         } else {
-          const willNudge = undelivered && !unwrappedNudged;
+          const willNudge =
+            undelivered && !nudgedSinceLastDelivery && nudgeCount < MAX_NUDGES_PER_STREAM;
           if (undelivered) {
+            const why = willNudge
+              ? ' — nudging'
+              : nudgeCount >= MAX_NUDGES_PER_STREAM
+                ? ' — nudge cap reached this stream'
+                : ' — already nudged since last delivery';
             log(
               `WARNING: turn produced text but nothing was delivered (no send_message/send_file call)` +
-                (willNudge ? ' — nudging' : ' — already nudged this turn'),
+                why,
             );
           }
           notifyExchangeComplete(onExchangeComplete, {
@@ -554,7 +572,8 @@ export async function processQuery(
             status: undelivered ? 'undelivered' : 'completed',
           });
           if (willNudge) {
-            unwrappedNudged = true;
+            nudgedSinceLastDelivery = true;
+            nudgeCount += 1;
             query.push(buildSendNudge(scratchpad));
           }
           // A nudge re-asks the SAME user prompt — keep it queued so the retry
