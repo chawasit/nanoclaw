@@ -61,11 +61,14 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
     : {};
   const desired = new Map<string, { type: 'symlink' | 'inline'; content: string }>();
 
-  // Skill fragments — every skill that ships an `instructions.md`.
-  // TODO (shared-source refactor): respect `container.json` skill selection.
+  // Skill fragments — every skill that ships an `instructions.md`, filtered to the
+  // group's `container.json` skill selection ('all' keeps every locally-shipped
+  // skill, matching container-runner.ts's syncSkillSymlinks/selectedSkillNames).
+  const skillSelection = configRow ? (JSON.parse(configRow.skills) as string[] | 'all') : 'all';
   const skillsHostDir = path.join(process.cwd(), 'container', 'skills');
   if (fs.existsSync(skillsHostDir)) {
     for (const skillName of fs.readdirSync(skillsHostDir)) {
+      if (skillSelection !== 'all' && !skillSelection.includes(skillName)) continue;
       const hostFragment = path.join(skillsHostDir, skillName, 'instructions.md');
       if (fs.existsSync(hostFragment)) {
         desired.set(`skill-${skillName}.md`, {

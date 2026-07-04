@@ -1,17 +1,53 @@
 import type { McpServerConfig } from '../../container-config.js';
 import { buildAgentGroupImage, killContainer, wakeContainer } from '../../container-runner.js';
 import { restartAgentGroupContainers } from '../../container-restart.js';
+import { getAgentGroup } from '../../db/agent-groups.js';
 import { getDb } from '../../db/connection.js';
 import { getSession } from '../../db/sessions.js';
 import { cascadeDeleteAgentGroup } from './group-cascade.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import {
+  ensureContainerConfig,
   getContainerConfig,
   updateContainerConfigScalars,
   updateContainerConfigJson,
 } from '../../db/container-configs.js';
 import type { ContainerConfigRow } from '../../types.js';
 import { registerResource } from '../crud.js';
+
+/** Validate the `mcpServers` request shape for `groups-config-update-mcp` — a plain
+ * object mapping server name to `McpServerConfig` (command required; args/env/instructions optional). */
+function validateMcpServers(raw: unknown): Record<string, McpServerConfig> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('mcpServers must be an object mapping server name to { command, args?, env?, instructions? }');
+  }
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`mcpServers.${name} must be an object`);
+    }
+    const v = value as Record<string, unknown>;
+    if (typeof v.command !== 'string' || !v.command) {
+      throw new Error(`mcpServers.${name}.command is required and must be a string`);
+    }
+    if (v.args !== undefined && !(Array.isArray(v.args) && v.args.every((a) => typeof a === 'string'))) {
+      throw new Error(`mcpServers.${name}.args must be an array of strings`);
+    }
+    if (v.env !== undefined && (typeof v.env !== 'object' || Array.isArray(v.env) || v.env === null)) {
+      throw new Error(`mcpServers.${name}.env must be an object`);
+    }
+    if (v.instructions !== undefined && typeof v.instructions !== 'string') {
+      throw new Error(`mcpServers.${name}.instructions must be a string`);
+    }
+    out[name] = {
+      command: v.command,
+      ...(v.args !== undefined ? { args: v.args as string[] } : {}),
+      ...(v.env !== undefined ? { env: v.env as Record<string, string> } : {}),
+      ...(v.instructions !== undefined ? { instructions: v.instructions as string } : {}),
+    };
+  }
+  return out;
+}
 
 /** Deserialize JSON columns for display. */
 function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
@@ -232,7 +268,8 @@ registerResource({
       access: 'approval',
       description:
         'Add an MCP server to a group. Requires `ncl groups restart` to take effect. ' +
-        'Use --id <group-id> --name <server-name> --command <cmd> [--args <json-array>] [--env <json-object>].',
+        'Use --id <group-id> --name <server-name> --command <cmd> [--args <json-array>] [--env <json-object>] ' +
+        '[--instructions <text>].',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -244,15 +281,60 @@ registerResource({
         const row = getContainerConfig(id);
         if (!row) throw new Error(`No container config for group: ${id}`);
 
+        const instructions = args.instructions as string | undefined;
         const servers = JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>;
         servers[name] = {
           command,
           args: args.args ? (JSON.parse(args.args as string) as string[]) : [],
           env: args.env ? (JSON.parse(args.env as string) as Record<string, string>) : {},
+          ...(instructions ? { instructions } : {}),
         };
         updateContainerConfigJson(id, 'mcp_servers', servers);
 
         return { added: name, servers };
+      },
+    },
+    'config update-skills': {
+      access: 'open', // host-only enforced inline below — same access class as create_agent/erase_user
+      description:
+        'MCP-tools/skills mgmt seam: set the group\'s skill selection (desired-state replace; upserts the ' +
+        'container_configs row if missing). Host-only. Does NOT restart the container — applies on the ' +
+        'agent\'s next natural respawn. Use --groupId <id> --skills <"all"|json-string-array>.',
+      handler: async (args, ctx) => {
+        if (ctx.caller !== 'host') throw new Error('host-only command');
+        const groupId = args.groupId as string;
+        if (!groupId) throw new Error('groupId is required');
+        if (!getAgentGroup(groupId)) throw new Error(`group not found: ${groupId}`);
+
+        const skills = args.skills;
+        if (skills !== 'all' && !(Array.isArray(skills) && skills.every((s) => typeof s === 'string'))) {
+          throw new Error('skills must be "all" or an array of strings');
+        }
+
+        ensureContainerConfig(groupId);
+        updateContainerConfigJson(groupId, 'skills', skills);
+
+        return { groupId, skills };
+      },
+    },
+    'config update-mcp': {
+      access: 'open', // host-only enforced inline below — same access class as create_agent/erase_user
+      description:
+        'MCP-tools/skills mgmt seam: REPLACE the group\'s mcp_servers map wholesale (desired-state, incl. each ' +
+        'server\'s optional `instructions`; upserts the container_configs row if missing). Host-only. Does NOT ' +
+        'restart the container — applies on the agent\'s next natural respawn. Use --groupId <id> --mcpServers <json-object>.',
+      handler: async (args, ctx) => {
+        if (ctx.caller !== 'host') throw new Error('host-only command');
+        const groupId = args.groupId as string;
+        if (!groupId) throw new Error('groupId is required');
+        if (!getAgentGroup(groupId)) throw new Error(`group not found: ${groupId}`);
+
+        const mcpServers = validateMcpServers(args.mcpServers);
+
+        ensureContainerConfig(groupId);
+        updateContainerConfigJson(groupId, 'mcp_servers', mcpServers);
+
+        return { groupId, servers: Object.keys(mcpServers) };
       },
     },
     'config remove-mcp-server': {

@@ -40,6 +40,7 @@ const TEST_DIR = '/tmp/nanoclaw-test-cli-groups';
 import { initTestDb, closeDb, runMigrations, createAgentGroup, getDb } from '../../db/index.js';
 import { createSession } from '../../db/sessions.js';
 import { dispatch } from '../dispatch.js';
+import type { McpServerConfig } from '../../container-config.js';
 // Side-effect import: registers the `groups-*` commands (including delete).
 import './groups.js';
 
@@ -437,5 +438,246 @@ describe('groups-config-update-env (#M16)', () => {
     expect(resp.ok).toBe(false);
     if (!resp.ok) expect(resp.error.code).toBe('approval-pending');
     expect(envOf(GID)).not.toHaveProperty('SHOULD_NOT_APPLY');
+  });
+});
+
+/**
+ * `ncl groups config update-skills` — MCP-tools/skills mgmt seam (P1): Circle
+ * writes container_configs.skills over ncl.sock. Desired-state replace,
+ * upserts the row, does NOT restart. Host-only — same access class as
+ * create_agent/erase_user (an `open` command with a hard inline caller
+ * check, NOT the approval-pending flow `config update-env` uses), because
+ * the request key is `groupId` (not `id`), which sidesteps dispatch.ts's
+ * built-in group-scope auto-fill/enforcement for the `groups` resource.
+ */
+describe('groups-config-update-skills (P1 MCP-tools/skills mgmt)', () => {
+  const GID = 'ag-skills-test';
+
+  beforeEach(() => {
+    const db = initTestDb();
+    runMigrations(db);
+    createAgentGroup({ id: GID, name: 'skills-test', folder: 'skills-test', agent_provider: null, created_at: now() });
+  });
+
+  function skillsRowOf(id: string): { skills: string } | undefined {
+    return getDb().prepare('SELECT skills FROM container_configs WHERE agent_group_id = ?').get(id) as
+      | { skills: string }
+      | undefined;
+  }
+
+  it('upserts a missing container_configs row and sets skills to a string array', async () => {
+    expect(skillsRowOf(GID)).toBeUndefined();
+
+    const resp = await dispatch(
+      { id: 'req-skills-1', command: 'groups-config-update-skills', args: { groupId: GID, skills: ['a', 'b'] } },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) expect(resp.data).toEqual({ groupId: GID, skills: ['a', 'b'] });
+    const row = skillsRowOf(GID);
+    expect(row).toBeDefined();
+    expect(JSON.parse(row!.skills)).toEqual(['a', 'b']);
+  });
+
+  it('sets skills to "all" and replaces a prior array selection', async () => {
+    getDb()
+      .prepare(
+        `INSERT INTO container_configs (agent_group_id, skills, mcp_servers, packages_apt, packages_npm, additional_mounts, updated_at)
+         VALUES (?, '["a"]', '{}', '[]', '[]', '[]', ?)`,
+      )
+      .run(GID, now());
+
+    const resp = await dispatch(
+      { id: 'req-skills-2', command: 'groups-config-update-skills', args: { groupId: GID, skills: 'all' } },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    expect(JSON.parse(skillsRowOf(GID)!.skills)).toBe('all');
+  });
+
+  it('rejects a missing groupId', async () => {
+    const resp = await dispatch(
+      { id: 'req-skills-3', command: 'groups-config-update-skills', args: { skills: 'all' } },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.message).toMatch(/groupId.*required/i);
+  });
+
+  it('rejects an unknown group', async () => {
+    const resp = await dispatch(
+      { id: 'req-skills-4', command: 'groups-config-update-skills', args: { groupId: 'ag-nope', skills: 'all' } },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.message).toMatch(/not found/i);
+  });
+
+  it('rejects a skills value that is neither "all" nor a string array', async () => {
+    const resp = await dispatch(
+      { id: 'req-skills-5', command: 'groups-config-update-skills', args: { groupId: GID, skills: { nope: true } } },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.message).toMatch(/skills must be/i);
+  });
+
+  it('is host-only: an agent caller is rejected inline (no approval-pending, no mutation)', async () => {
+    const SID = 'sess-skills-guard';
+    createSession({
+      id: SID,
+      agent_group_id: GID,
+      messaging_group_id: null,
+      thread_id: null,
+      agent_provider: null,
+      status: 'active',
+      container_status: 'stopped',
+      last_active: null,
+      created_at: now(),
+    });
+
+    const resp = await dispatch(
+      { id: 'req-skills-6', command: 'groups-config-update-skills', args: { groupId: GID, skills: ['x'] } },
+      { caller: 'agent', sessionId: SID, agentGroupId: GID, messagingGroupId: 'mg-x' },
+    );
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) {
+      expect(resp.error.code).toBe('handler-error');
+      expect(resp.error.message).toMatch(/host-only/i);
+    }
+    expect(skillsRowOf(GID)).toBeUndefined();
+  });
+});
+
+/**
+ * `ncl groups config update-mcp` — MCP-tools/skills mgmt seam (P1): Circle
+ * REPLACES container_configs.mcp_servers wholesale (desired-state, not a
+ * merge), including each server's optional `instructions`. Upserts the row,
+ * does NOT restart. Host-only, same reasoning as update-skills above.
+ */
+describe('groups-config-update-mcp (P1 MCP-tools/skills mgmt)', () => {
+  const GID = 'ag-mcp-test';
+
+  beforeEach(() => {
+    const db = initTestDb();
+    runMigrations(db);
+    createAgentGroup({ id: GID, name: 'mcp-test', folder: 'mcp-test', agent_provider: null, created_at: now() });
+  });
+
+  function mcpServersOf(id: string): Record<string, McpServerConfig> | undefined {
+    const row = getDb().prepare('SELECT mcp_servers FROM container_configs WHERE agent_group_id = ?').get(id) as
+      | { mcp_servers: string }
+      | undefined;
+    return row ? (JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>) : undefined;
+  }
+
+  it('upserts a missing container_configs row and writes the full map incl. instructions', async () => {
+    expect(mcpServersOf(GID)).toBeUndefined();
+
+    const resp = await dispatch(
+      {
+        id: 'req-mcp-1',
+        command: 'groups-config-update-mcp',
+        args: {
+          groupId: GID,
+          mcpServers: {
+            fetch: { command: 'npx', args: ['-y', 'fetch-mcp'], instructions: 'Use for HTTP GETs.' },
+          },
+        },
+      },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    if (resp.ok) expect(resp.data).toEqual({ groupId: GID, servers: ['fetch'] });
+    expect(mcpServersOf(GID)).toEqual({
+      fetch: { command: 'npx', args: ['-y', 'fetch-mcp'], instructions: 'Use for HTTP GETs.' },
+    });
+  });
+
+  it('REPLACES the map wholesale — a server missing from the new request is dropped', async () => {
+    getDb()
+      .prepare(
+        `INSERT INTO container_configs (agent_group_id, skills, mcp_servers, packages_apt, packages_npm, additional_mounts, updated_at)
+         VALUES (?, '"all"', ?, '[]', '[]', '[]', ?)`,
+      )
+      .run(GID, JSON.stringify({ stale: { command: 'stale-cmd', args: [], env: {} } }), now());
+
+    const resp = await dispatch(
+      {
+        id: 'req-mcp-2',
+        command: 'groups-config-update-mcp',
+        args: { groupId: GID, mcpServers: { fresh: { command: 'fresh-cmd' } } },
+      },
+      { caller: 'host' },
+    );
+
+    expect(resp.ok).toBe(true);
+    expect(mcpServersOf(GID)).toEqual({ fresh: { command: 'fresh-cmd' } });
+  });
+
+  it('rejects a missing groupId', async () => {
+    const resp = await dispatch(
+      { id: 'req-mcp-3', command: 'groups-config-update-mcp', args: { mcpServers: {} } },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.message).toMatch(/groupId.*required/i);
+  });
+
+  it('rejects an unknown group', async () => {
+    const resp = await dispatch(
+      { id: 'req-mcp-4', command: 'groups-config-update-mcp', args: { groupId: 'ag-nope', mcpServers: {} } },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.message).toMatch(/not found/i);
+  });
+
+  it('rejects a server entry missing `command`', async () => {
+    const resp = await dispatch(
+      {
+        id: 'req-mcp-5',
+        command: 'groups-config-update-mcp',
+        args: { groupId: GID, mcpServers: { bad: { args: [] } } },
+      },
+      { caller: 'host' },
+    );
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.message).toMatch(/command is required/i);
+  });
+
+  it('is host-only: an agent caller is rejected inline (no approval-pending, no mutation)', async () => {
+    const SID = 'sess-mcp-guard';
+    createSession({
+      id: SID,
+      agent_group_id: GID,
+      messaging_group_id: null,
+      thread_id: null,
+      agent_provider: null,
+      status: 'active',
+      container_status: 'stopped',
+      last_active: null,
+      created_at: now(),
+    });
+
+    const resp = await dispatch(
+      {
+        id: 'req-mcp-6',
+        command: 'groups-config-update-mcp',
+        args: { groupId: GID, mcpServers: { x: { command: 'x' } } },
+      },
+      { caller: 'agent', sessionId: SID, agentGroupId: GID, messagingGroupId: 'mg-x' },
+    );
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) {
+      expect(resp.error.code).toBe('handler-error');
+      expect(resp.error.message).toMatch(/host-only/i);
+    }
+    expect(mcpServersOf(GID)).toBeUndefined();
   });
 });
