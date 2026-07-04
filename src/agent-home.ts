@@ -35,8 +35,63 @@ export const USER_NAME_PLACEHOLDER =
 export const USER_ADDRESS_PLACEHOLDER = '- **How to address them:** (unknown)';
 export const USER_EMAIL_PLACEHOLDER = '- **Email:** (unknown)';
 
+/** Marker delimiters for the describe-header block at the top of each stub file (below). */
+export const FILE_HEADER_START = '<!-- file-header:start -->';
+export const FILE_HEADER_END = '<!-- file-header:end -->';
+
+/**
+ * Single source of truth for the describe-header — purpose / write-here /
+ * not-here — embedded at the top of IDENTITY.md, USER.md, SOUL.md, and
+ * MEMORY.md. Consumed by both the stub templates below (new agents) and
+ * `upsertFileHeaders` (existing agents, via backfill/spawn). BOOTSTRAP.md is
+ * deliberately absent — it self-deletes, see `renderBootstrapTemplate`.
+ *
+ * Self- and cross-references use full `/workspace/agent/...` paths only —
+ * never a bare filename (owner rule, see the FULL PATHS acceptance test).
+ */
+const FILE_HEADERS: Record<string, string> = {
+  'IDENTITY.md': [
+    FILE_HEADER_START,
+    '> **This file — `/workspace/agent/IDENTITY.md`: who you are.** Your name, role, and vibe.',
+    '> **Write here:** your Name, Role, Vibe, Emoji.',
+    "> **Not here:** your user's details → `/workspace/agent/USER.md`; your values/boundaries →",
+    '> `/workspace/agent/SOUL.md`.',
+    FILE_HEADER_END,
+  ].join('\n'),
+  'USER.md': [
+    FILE_HEADER_START,
+    '> **This file — `/workspace/agent/USER.md`: your primary user.** The person you work for and',
+    '> report to.',
+    '> **Write here:** their name, how they like to be addressed, timezone, preferences, goals,',
+    '> ongoing context.',
+    '> **Not here:** who you are → `/workspace/agent/IDENTITY.md`; company-wide facts →',
+    '> `/workspace/agent/MEMORY.md`; passwords/secrets → never.',
+    FILE_HEADER_END,
+  ].join('\n'),
+  'SOUL.md': [
+    FILE_HEADER_START,
+    '> **This file — `/workspace/agent/SOUL.md`: your values, working style, boundaries,',
+    '> continuity.** Who you are underneath the job.',
+    "> **Write here:** how you behave, what you will/won't do, notes to future-you.",
+    '> **Not here:** task specifics/facts → `/workspace/agent/MEMORY.md`; user details →',
+    '> `/workspace/agent/USER.md`.',
+    FILE_HEADER_END,
+  ].join('\n'),
+  'MEMORY.md': [
+    FILE_HEADER_START,
+    '> **This file — `/workspace/agent/MEMORY.md`: the indexed pointer to everything you must',
+    '> always know.** Main-session-only — do not surface it in shared/group contexts.',
+    '> **Write here:** ONE line per memory, pointing at a detail file.',
+    '> **Not here:** the detail itself → a file under `/workspace/agent/memory/`; user profile →',
+    '> `/workspace/agent/USER.md`.',
+    FILE_HEADER_END,
+  ].join('\n'),
+};
+
 export function renderIdentityTemplate(): string {
   return [
+    FILE_HEADERS['IDENTITY.md'],
+    '',
     '# Identity',
     '',
     'Fill this in on your first run — see `/workspace/agent/BOOTSTRAP.md`.',
@@ -51,6 +106,8 @@ export function renderIdentityTemplate(): string {
 
 export function renderUserTemplate(): string {
   return [
+    FILE_HEADERS['USER.md'],
+    '',
     '# Your user',
     '',
     USER_NAME_PLACEHOLDER,
@@ -71,6 +128,8 @@ export function renderUserTemplate(): string {
 
 export function renderSoulTemplate(): string {
   return [
+    FILE_HEADERS['SOUL.md'],
+    '',
     '# Soul',
     '',
     "You're a member of a small AI company — genuinely helpful, and here to earn trust, not just complete tasks.",
@@ -96,6 +155,8 @@ export function renderSoulTemplate(): string {
 
 export function renderMemoryTemplate(): string {
   return [
+    FILE_HEADERS['MEMORY.md'],
+    '',
     '# Memory index',
     '',
     'One line per entry, pointing at the detail. **Main-session-only** — do not surface this',
@@ -160,7 +221,7 @@ export function renderAgentHomeManual(): string {
     '',
     'Your primary user is documented in `/workspace/agent/USER.md`. **Reply to them by default —',
     'omit `to`.** Send reports and files to your user, **never to `parent` or any other agent.**',
-    "`parent` (your manager / the Chief of Staff) and any other agents are colleagues — reach them",
+    '`parent` (your manager / the Chief of Staff) and any other agents are colleagues — reach them',
     "to delegate or report up, not to deliver your user's work.",
     '',
     '**Example — delivering a report to your user.** Write your work to a full path, e.g.',
@@ -187,6 +248,13 @@ export function renderAgentHomeManual(): string {
     'as you learn. `/workspace/agent/MEMORY.md` is read on demand (main-session-only). If you want to',
     "remember something, write it to a file — mental notes don't survive a restart. Text beats brain.",
     '',
+    '**When your user tells you something durable — how to address them, a preference, a deadline,',
+    'a fact about the work — persist it to the right file under `/workspace/agent/` in the SAME turn.',
+    'Acknowledging ("got it") is NOT enough: an unwritten fact is gone at the next restart.**',
+    '',
+    '**Worked example.** Your user says "call me Boss." Immediately edit `/workspace/agent/USER.md`',
+    'so **How to address them** reads "Boss" — THEN reply. Do not just say "got it" and move on.',
+    '',
     '@/workspace/agent/IDENTITY.md',
     '@/workspace/agent/USER.md',
     '@/workspace/agent/SOUL.md',
@@ -200,7 +268,11 @@ export function renderAgentHomeManual(): string {
     "in that folder's own file instead. Lean root, detail in leaves. Co-locate the key facts for",
     'a piece of work with the work itself. Whatever you must always know goes into',
     '`/workspace/agent/MEMORY.md` as a **one-line index entry** pointing at the detail — do not',
-    'let it grow into one giant file.',
+    'let it grow into one giant file. Every file you create this way — a per-folder',
+    '`/workspace/agent/<folder>/CLAUDE.md`, a memory detail file under `/workspace/agent/memory/`',
+    '— opens with the same kind of purpose header you see at the top of',
+    '`/workspace/agent/IDENTITY.md`, `/workspace/agent/USER.md`, `/workspace/agent/SOUL.md`, and',
+    '`/workspace/agent/MEMORY.md`: what the file is for, what to write, what not to.',
     '',
     '### 5. Tools',
     '',
@@ -281,6 +353,44 @@ export function upsertAgentHomeManual(groupDir: string): boolean {
   fs.mkdirSync(groupDir, { recursive: true });
   fs.writeFileSync(filePath, next);
   return true;
+}
+
+/** Files that carry a describe-header. BOOTSTRAP.md is deliberately excluded — it self-deletes. */
+const HEADER_TARGET_FILES = ['IDENTITY.md', 'USER.md', 'SOUL.md', 'MEMORY.md'];
+
+/** Strip a leading file-header block (if present) from `content`, leaving everything below it. */
+function stripFileHeader(content: string): string {
+  if (!content.startsWith(FILE_HEADER_START)) return content;
+  const end = content.indexOf(FILE_HEADER_END);
+  if (end === -1) return content; // malformed (no end marker) — leave untouched rather than guess
+  return content.slice(end + FILE_HEADER_END.length).replace(/^\n+/, '');
+}
+
+/**
+ * Insert or refresh the describe-header block at the very TOP of each of
+ * IDENTITY/USER/SOUL/MEMORY.md in `groupDir` — for files that already exist
+ * (new agents get the header via the stub templates instead; this is the
+ * backfill path for pre-existing agents). Never touches BOOTSTRAP.md and
+ * never clobbers content below the header. Idempotent — a second call with no
+ * template change writes nothing. Returns the filenames actually written.
+ */
+export function upsertFileHeaders(groupDir: string): string[] {
+  const written: string[] = [];
+  for (const filename of HEADER_TARGET_FILES) {
+    const filePath = path.join(groupDir, filename);
+    let existing: string;
+    try {
+      existing = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      continue; // not seeded yet — nothing to backfill
+    }
+    const body = stripFileHeader(existing);
+    const next = FILE_HEADERS[filename] + '\n\n' + body;
+    if (next === existing) continue;
+    fs.writeFileSync(filePath, next);
+    written.push(filename);
+  }
+  return written;
 }
 
 export interface AgentHomePrimaryUser {

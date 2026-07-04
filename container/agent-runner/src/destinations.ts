@@ -91,6 +91,7 @@ export function buildSystemPromptAddendum(assistantName?: string, primaryUser?: 
     sections.push(buildPrimaryUserSection(primaryUser));
   }
 
+  sections.push(buildKeepingMemorySection());
   sections.push(buildDestinationsSection());
 
   return sections.join('\n\n');
@@ -107,6 +108,21 @@ function buildPrimaryUserSection(primaryUser: PrimaryUser): string {
     '## Your user',
     '',
     `Your primary user is ${contact}. Reply to them by default — omit \`to\`, or use \`to:'${primaryUser.destination}'\`. Send reports and files to them, NOT to other agents. \`parent\` and any other agents are colleagues, not your user.`,
+  ].join('\n');
+}
+
+/**
+ * Forceful behavioral rule (owner directive — the chawanrat/call-name miss:
+ * the owner told the agent his preferred call-name, the agent acknowledged
+ * and wrote nothing to `/workspace/agent/USER.md`, so it was lost). Injected
+ * fresh on every spawn, at system-prompt authority, so it can't be dropped by
+ * a long transcript the way an instruction buried in a memory file can.
+ */
+function buildKeepingMemorySection(): string {
+  return [
+    '## Keeping memory',
+    '',
+    'When your user tells you something durable — how to address them, a preference, a deadline, a fact about the work — persist it to the right file under `/workspace/agent/` in the same turn. Acknowledging ("got it") is NOT enough: an unwritten fact is gone at the next restart.',
   ].join('\n');
 }
 

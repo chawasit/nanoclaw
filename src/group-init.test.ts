@@ -86,13 +86,20 @@ describe('initGroupFilesystem — Agent Home seeding', () => {
     expect(manual).toContain('### 1. Where you live');
   });
 
-  it('is idempotent — re-running on an already-initialized group never overwrites the stub files', () => {
+  it('is idempotent — re-running on an already-initialized group never overwrites the agent-edited stub body', () => {
     initGroupFilesystem(group('w1'), { instructions: 'You are the data analyst.' });
     files[homeFile('w1', 'IDENTITY.md')] = '# Identity\n\n- **Name:** Aria (already bootstrapped)\n';
 
     initGroupFilesystem(group('w1'), { instructions: 'You are the data analyst.' });
 
-    expect(files[homeFile('w1', 'IDENTITY.md')]).toBe('# Identity\n\n- **Name:** Aria (already bootstrapped)\n');
+    // The describe-header is refreshed on every call (upsertFileHeaders), but the agent's own
+    // edit below it is never touched.
+    expect(files[homeFile('w1', 'IDENTITY.md')]).toContain('# Identity\n\n- **Name:** Aria (already bootstrapped)\n');
+
+    // A further call is a true no-op — the header itself does not keep re-appending.
+    const before = files[homeFile('w1', 'IDENTITY.md')];
+    initGroupFilesystem(group('w1'), { instructions: 'You are the data analyst.' });
+    expect(files[homeFile('w1', 'IDENTITY.md')]).toBe(before);
   });
 
   it('regenerates the manual block on a later call (template refresh) without dropping agent notes', () => {
