@@ -49,6 +49,36 @@ function validateMcpServers(raw: unknown): Record<string, McpServerConfig> {
   return out;
 }
 
+/**
+ * Resolve MCP env values at write time (the secret boundary). Circle's catalog never
+ * holds secret values — its `groups-config-update-mcp` request carries the env-key
+ * NAMES with BLANK values; we fill each blank from the host's own `process.env`,
+ * keeping only keys that are actually set (mirrors `applyBaseProfile`'s gating). A
+ * caller that supplies a non-blank value (base-profile, tests, a host-side script)
+ * has it passed through untouched — so this is backward-compatible with literal
+ * callers and additive for Circle's name-only convention.
+ */
+function resolveMcpServerEnv(servers: Record<string, McpServerConfig>): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (!cfg.env || Object.keys(cfg.env).length === 0) {
+      out[name] = cfg;
+      continue;
+    }
+    const resolved: Record<string, string> = {};
+    for (const [key, provided] of Object.entries(cfg.env)) {
+      if (provided && provided.length > 0) {
+        resolved[key] = provided; // literal supplied by a host caller — keep as-is
+      } else {
+        const hostVal = process.env[key]; // Circle sent a blank → resolve from host env
+        if (hostVal) resolved[key] = hostVal;
+      }
+    }
+    out[name] = { ...cfg, env: resolved };
+  }
+  return out;
+}
+
 /** Deserialize JSON columns for display. */
 function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
   return {
@@ -329,7 +359,7 @@ registerResource({
         if (!groupId) throw new Error('groupId is required');
         if (!getAgentGroup(groupId)) throw new Error(`group not found: ${groupId}`);
 
-        const mcpServers = validateMcpServers(args.mcpServers);
+        const mcpServers = resolveMcpServerEnv(validateMcpServers(args.mcpServers));
 
         ensureContainerConfig(groupId);
         updateContainerConfigJson(groupId, 'mcp_servers', mcpServers);

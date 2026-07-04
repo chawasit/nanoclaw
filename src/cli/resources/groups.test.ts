@@ -619,6 +619,31 @@ describe('groups-config-update-mcp (P1 MCP-tools/skills mgmt)', () => {
     expect(mcpServersOf(GID)).toEqual({ fresh: { command: 'fresh-cmd' } });
   });
 
+  it('resolves BLANK env values from host process.env, keeps literals, drops host-unset keys', async () => {
+    process.env.TOOLING_ENV_TEST_KEY = 'host-secret-123';
+    try {
+      const resp = await dispatch(
+        {
+          id: 'req-mcp-env',
+          command: 'groups-config-update-mcp',
+          args: {
+            groupId: GID,
+            // Circle's convention: env-key NAMES with blank values (it never holds secrets).
+            mcpServers: { svc: { command: 'npx', env: { TOOLING_ENV_TEST_KEY: '', UNSET_HOST_KEY: '', LITERAL: 'kept' } } },
+          },
+        },
+        { caller: 'host' },
+      );
+      expect(resp.ok).toBe(true);
+      // blank resolved from host env; unset host key dropped; literal passed through.
+      expect(mcpServersOf(GID)).toEqual({
+        svc: { command: 'npx', env: { TOOLING_ENV_TEST_KEY: 'host-secret-123', LITERAL: 'kept' } },
+      });
+    } finally {
+      delete process.env.TOOLING_ENV_TEST_KEY;
+    }
+  });
+
   it('rejects a missing groupId', async () => {
     const resp = await dispatch(
       { id: 'req-mcp-3', command: 'groups-config-update-mcp', args: { mcpServers: {} } },
