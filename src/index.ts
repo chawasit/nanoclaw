@@ -17,6 +17,7 @@ import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, st
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
+import { reconcileSessionsOnBoot } from './startup-heal.js';
 import { enforceUpgradeTripwire } from './upgrade-state.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -163,6 +164,17 @@ async function main(): Promise<void> {
   startActiveDeliveryPoll();
   startSweepDeliveryPoll();
   log.info('Delivery polls started');
+
+  // 5.5 Startup heal — reconcile sessions.container_status left stale by a
+  // SIGTERM'd mid-turn agent (see startup-heal.ts). Runs after the delivery
+  // adapter + polls are up (so a resumed agent's reply can be delivered) and
+  // before host-sweep starts (so its first tick can pick up anything
+  // re-pended here). A heal failure must never abort boot.
+  try {
+    await reconcileSessionsOnBoot();
+  } catch (err) {
+    log.error('Startup heal failed', { err });
+  }
 
   // 6. Start host sweep
   startHostSweep();
