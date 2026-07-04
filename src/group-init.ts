@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { seedAgentHomeFiles, upsertAgentHomeManual } from './agent-home.js';
+import { seedAgentHomeFiles, upsertAgentHomeManual, upsertFileHeaders } from './agent-home.js';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { ensureContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
@@ -105,6 +105,10 @@ export function initGroupFilesystem(
     }
     if (upsertAgentHomeManual(groupDir)) {
       initialized.push('CLAUDE.local.md (agent-home manual)');
+    }
+    const headersWritten = upsertFileHeaders(groupDir);
+    if (headersWritten.length > 0) {
+      initialized.push(...headersWritten.map((f) => `agent-home:header:${f}`));
     }
   } else if (seed) {
     const seedFile = path.join(groupDir, 'memory', 'memories', 'imported-agent-memory.md');

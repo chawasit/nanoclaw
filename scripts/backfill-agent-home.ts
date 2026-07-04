@@ -23,7 +23,12 @@
 import fs from 'fs';
 import path from 'path';
 
-import { applyPrimaryUserToUserFile, seedAgentHomeFiles, upsertAgentHomeManual } from '../src/agent-home.js';
+import {
+  applyPrimaryUserToUserFile,
+  seedAgentHomeFiles,
+  upsertAgentHomeManual,
+  upsertFileHeaders,
+} from '../src/agent-home.js';
 import { resolvePrimaryUser } from '../src/container-config.js';
 import { DATA_DIR, GROUPS_DIR } from '../src/config.js';
 import { getAllAgentGroups } from '../src/db/agent-groups.js';
@@ -44,6 +49,7 @@ async function main(): Promise<void> {
 
   let filesSeeded = 0;
   let manualsRefreshed = 0;
+  let headersRefreshed = 0;
   let usersBackfilled = 0;
   let skippedNoDir = 0;
 
@@ -59,7 +65,7 @@ async function main(): Promise<void> {
         (f) => !fs.existsSync(path.join(groupDir, f)),
       );
       console.log(
-        `[dry-run] ${group.id} (${group.folder}): would seed [${wouldWrite.join(', ') || 'none — already present'}], refresh CLAUDE.local.md manual`,
+        `[dry-run] ${group.id} (${group.folder}): would seed [${wouldWrite.join(', ') || 'none — already present'}], refresh CLAUDE.local.md manual, refresh file-headers on IDENTITY/USER/SOUL/MEMORY.md`,
       );
       continue;
     }
@@ -72,6 +78,12 @@ async function main(): Promise<void> {
 
     if (upsertAgentHomeManual(groupDir)) {
       manualsRefreshed++;
+    }
+
+    const headersWritten = upsertFileHeaders(groupDir);
+    if (headersWritten.length > 0) {
+      headersRefreshed += headersWritten.length;
+      console.log(`${group.id} (${group.folder}): refreshed file-header(s) on ${headersWritten.join(', ')}`);
     }
 
     const primaryUser = resolvePrimaryUser(group.id);
@@ -88,7 +100,8 @@ async function main(): Promise<void> {
 
   console.log(
     `\nBackfill complete: ${filesSeeded} stub file(s) seeded, ${manualsRefreshed} manual(s) refreshed, ` +
-      `${usersBackfilled} USER.md backfilled from primary user, ${skippedNoDir} skipped (no folder yet).`,
+      `${headersRefreshed} file-header(s) refreshed, ${usersBackfilled} USER.md backfilled from primary user, ` +
+      `${skippedNoDir} skipped (no folder yet).`,
   );
 }
 

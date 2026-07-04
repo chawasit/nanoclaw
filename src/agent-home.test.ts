@@ -30,6 +30,7 @@ import {
   renderUserTemplate,
   seedAgentHomeFiles,
   upsertAgentHomeManual,
+  upsertFileHeaders,
   USER_ADDRESS_PLACEHOLDER,
   USER_EMAIL_PLACEHOLDER,
   USER_NAME_PLACEHOLDER,
@@ -211,6 +212,126 @@ describe('upsertAgentHomeManual', () => {
     expect(files[file]).toContain('<!-- base-personality -->');
     expect(files[file]).toContain('<!-- base-onboarding -->');
     expect(files[file]).toContain('### 1. Where you live');
+  });
+});
+
+describe('file-header blockquote embedded in each stub template', () => {
+  it('IDENTITY.md embeds purpose/write/not-here pointing at USER.md and SOUL.md', () => {
+    const t = renderIdentityTemplate();
+    expect(t).toContain('<!-- file-header:start -->');
+    expect(t).toContain('<!-- file-header:end -->');
+    expect(t).toContain('/workspace/agent/IDENTITY.md');
+    expect(t).toContain('Not here:');
+    expect(t).toContain('/workspace/agent/USER.md');
+    expect(t).toContain('/workspace/agent/SOUL.md');
+  });
+
+  it('USER.md embeds purpose/write/not-here pointing at IDENTITY.md and MEMORY.md', () => {
+    const t = renderUserTemplate();
+    expect(t).toContain('<!-- file-header:start -->');
+    expect(t).toContain('/workspace/agent/USER.md');
+    expect(t).toContain('/workspace/agent/IDENTITY.md');
+    expect(t).toContain('/workspace/agent/MEMORY.md');
+  });
+
+  it('SOUL.md embeds purpose/write/not-here pointing at MEMORY.md and USER.md', () => {
+    const t = renderSoulTemplate();
+    expect(t).toContain('<!-- file-header:start -->');
+    expect(t).toContain('/workspace/agent/SOUL.md');
+    expect(t).toContain('/workspace/agent/MEMORY.md');
+    expect(t).toContain('/workspace/agent/USER.md');
+  });
+
+  it('MEMORY.md embeds purpose/write/not-here pointing at the memory/ folder and USER.md', () => {
+    const t = renderMemoryTemplate();
+    expect(t).toContain('<!-- file-header:start -->');
+    expect(t).toContain('/workspace/agent/MEMORY.md');
+    expect(t).toContain('/workspace/agent/memory/');
+    expect(t).toContain('/workspace/agent/USER.md');
+  });
+
+  it('BOOTSTRAP.md does NOT get a file-header block (it self-deletes)', () => {
+    const t = renderBootstrapTemplate();
+    expect(t).not.toContain('<!-- file-header:start -->');
+  });
+});
+
+describe('upsertFileHeaders', () => {
+  it('adds a header to a headerless existing file', () => {
+    files[f('IDENTITY.md')] = '# Identity\n\n- **Name:** Aria\n';
+    const written = upsertFileHeaders(GROUP_DIR);
+    expect(written).toContain('IDENTITY.md');
+    expect(files[f('IDENTITY.md')]).toContain('<!-- file-header:start -->');
+    expect(files[f('IDENTITY.md')]).toContain('- **Name:** Aria');
+  });
+
+  it('replaces an existing (stale) header block without touching the body below it', () => {
+    files[f('USER.md')] = [
+      '<!-- file-header:start -->',
+      'stale header text from an older template',
+      '<!-- file-header:end -->',
+      '',
+      '# Your user',
+      '',
+      '- **Name:** Alice (deepened by agent)',
+      '',
+    ].join('\n');
+    upsertFileHeaders(GROUP_DIR);
+    expect(files[f('USER.md')]).not.toContain('stale header text from an older template');
+    expect(files[f('USER.md')]).toContain('- **Name:** Alice (deepened by agent)');
+    expect(files[f('USER.md')].split('file-header:start').length - 1).toBe(1);
+  });
+
+  it('is idempotent — a second call writes nothing further', () => {
+    files[f('SOUL.md')] = renderSoulTemplate();
+    upsertFileHeaders(GROUP_DIR);
+    mockWrite.mockClear();
+    const written = upsertFileHeaders(GROUP_DIR);
+    expect(written).toEqual([]);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it('does not clobber content below the end-marker', () => {
+    files[f('MEMORY.md')] =
+      renderMemoryTemplate() + '- [ops runbook](/workspace/agent/memory/2026-07-05-ops-runbook.md) — how we deploy.\n';
+    upsertFileHeaders(GROUP_DIR);
+    expect(files[f('MEMORY.md')]).toContain(
+      '- [ops runbook](/workspace/agent/memory/2026-07-05-ops-runbook.md) — how we deploy.',
+    );
+  });
+
+  it('skips files that do not exist', () => {
+    const written = upsertFileHeaders(GROUP_DIR);
+    expect(written).toEqual([]);
+  });
+
+  it('leaves BOOTSTRAP.md alone even when present', () => {
+    files[f('BOOTSTRAP.md')] = renderBootstrapTemplate();
+    const before = files[f('BOOTSTRAP.md')];
+    upsertFileHeaders(GROUP_DIR);
+    expect(files[f('BOOTSTRAP.md')]).toBe(before);
+  });
+});
+
+describe('renderAgentHomeManual — §3 "write it down" mandate', () => {
+  it('forcefully states writing must happen in the same turn — acknowledging is not enough', () => {
+    const m = renderAgentHomeManual();
+    expect(m).toContain('SAME turn');
+    expect(m).toContain('Acknowledging ("got it") is NOT enough');
+  });
+
+  it('includes the canonical "call me Boss" worked example pointing at the full USER.md path', () => {
+    const m = renderAgentHomeManual();
+    expect(m).toContain('call me Boss');
+    expect(m).toContain('/workspace/agent/USER.md');
+    expect(m).toContain('How to address them');
+  });
+});
+
+describe('renderAgentHomeManual — §4 per-file purpose-header convention', () => {
+  it('states every new .md file opens with the same purpose-header pattern', () => {
+    const m = renderAgentHomeManual();
+    expect(m).toContain('purpose header');
   });
 });
 

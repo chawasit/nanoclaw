@@ -108,6 +108,27 @@ describe('buildSystemPromptAddendum — primary user block', () => {
     expect(prompt).not.toContain('## Your user');
     expect(prompt).not.toContain('Your primary user is');
   });
+
+  it('forcefully instructs persisting durable facts to /workspace/agent/ in the same turn', () => {
+    seedDestination('user', 'alice@trirat.co', 'cli', 'web:google:123');
+    const prompt = buildSystemPromptAddendum('CoS', {
+      name: 'alice@trirat.co',
+      email: 'alice@trirat.co',
+      destination: 'user',
+    });
+    expect(prompt).toContain('/workspace/agent/');
+    expect(prompt).toContain('same turn');
+    expect(prompt).toContain('Acknowledging');
+    expect(prompt).toContain('is NOT enough');
+  });
+
+  it('includes the persist-in-the-same-turn rule even when no primaryUser is resolved', () => {
+    seedDestination('parent', 'Chief of Staff', 'cli', 'web:google:789');
+    const prompt = buildSystemPromptAddendum('CoS');
+    expect(prompt).toContain('/workspace/agent/');
+    expect(prompt).toContain('same turn');
+    expect(prompt).toContain('is NOT enough');
+  });
 });
 
 describe('buildSystemPromptAddendum — people vs. agents split', () => {
