@@ -22,8 +22,9 @@
  *   4. performCreateAgent under the main agent with the principal binding (S1)
  *   5. apply a $0 local model + endpoint env (HOST CONFIG — never baked into the
  *      public fork) so sign-up never auto-spends (D11/D33)
- *   6. web lane: messaging_groups (cli / web:google:<sub> / instance=cli) +
- *      the `local-cli` reply-routing destination + the messaging_group_agents wiring
+ *   6. web lane: messaging_groups (cli / web:google:<sub> / instance=cli, named
+ *      after the human's email) + the `user` reply-routing destination + the
+ *      messaging_group_agents wiring
  *   7. mint the pollable, clean-origin session via routeInbound (engages + wakes)
  *
  * Deferred to later M03 slices (graceful degradation per SPEC-M03 §6): offboard /
@@ -154,30 +155,38 @@ function applyZeroCostModel(agentGroupId: string, cfg: ProvisionConfig): void {
 
 /**
  * Wire the dedicated web lane: a `cli` messaging group with a UNIQUE platform id,
- * the `local-cli` reply-routing destination, and the agent wiring. The cli adapter
+ * the `user` reply-routing destination, and the agent wiring. The cli adapter
  * no-ops delivery for a non-`local` platform id, so replies route NOWHERE external
  * — Circle tails the session's outbound.db. Returns the lane mg id.
+ *
+ * The mg is named after the human's email (not the raw `web:google:<sub>`
+ * platform id) so an agent reading `<message from="user">` — or the "Your
+ * user" system-prompt block (dev-log: the chawanrat misroute, a report sent
+ * to `parent` instead of the human owner) — sees a real, readable identity.
  */
-function wireWebLane(agentGroupId: string, platformId: string, now: string): string {
+function wireWebLane(agentGroupId: string, platformId: string, email: string, now: string): string {
   const mgId = `mg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   createMessagingGroup({
     id: mgId,
     channel_type: 'cli',
     platform_id: platformId,
     instance: 'cli',
-    name: platformId,
+    name: email,
     is_group: 0,
     unknown_sender_policy: 'public',
     created_at: now,
   });
-  // The reply-routing destination MUST be named `local-cli` (the conventional
-  // local_name an agent addresses its cli origin by). Create it FIRST so the
-  // wiring's auto-destination (which derives a name from mg.name) is skipped —
-  // `createMessagingGroupAgent` no-ops the destination when one already targets
-  // this mg. Without `local-cli` the `<message to="local-cli">` reply is dropped.
+  // The reply-routing destination is named `user` (was `local-cli` — renamed
+  // 2026-07: nothing else in the repo keys off that literal string for routing,
+  // only this file + its own test wrote/asserted it — see the destinations.ts
+  // findByRouting/originAttr resolution, which keys off channel_type+platform_id,
+  // not the local_name). Create it FIRST so the wiring's auto-destination (which
+  // derives a name from mg.name) is skipped — `createMessagingGroupAgent` no-ops
+  // the destination when one already targets this mg. Without `user` the
+  // `<message to="user">` reply is dropped.
   createDestination({
     agent_group_id: agentGroupId,
-    local_name: 'local-cli',
+    local_name: 'user',
     target_type: 'channel',
     target_id: mgId,
     created_at: now,
@@ -306,7 +315,7 @@ export async function provision(args: ProvisionArgs, ctx: CallerContext): Promis
     }
 
     applyZeroCostModel(created.id, cfg);
-    const mgId = wireWebLane(created.id, platformId, now);
+    const mgId = wireWebLane(created.id, platformId, args.email, now);
     await mintSession(platformId);
 
     log.info('provision: agent created + bound + wired', {

@@ -14,7 +14,10 @@ import path from 'path';
 import { GROUPS_DIR } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
-import { getChildAgentGroupIds } from './modules/agent-to-agent/db/agent-destinations.js';
+import { getMessagingGroup } from './db/messaging-groups.js';
+import { getChildAgentGroupIds, getDestinations } from './modules/agent-to-agent/db/agent-destinations.js';
+import { getMembers } from './modules/permissions/db/agent-group-members.js';
+import { getUser } from './modules/permissions/db/users.js';
 import { applyLeaderWorkspaceMounts } from './leader-mounts.js';
 import { disallowedToolsForRole } from './leader-tools.js';
 import { applyAutoCompactWindow } from './context-window.js';
@@ -52,6 +55,8 @@ export interface ContainerConfig {
   effort?: string;
   /** Tool names to DISALLOW for this agent (leader-gated; dev-log/0057). */
   disallowedTools?: string[];
+  /** The agent's bound human (agent_group_members), surfaced structurally — see resolvePrimaryUser. */
+  primaryUser?: { name: string; email?: string; destination: string };
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -75,6 +80,31 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
   };
+}
+
+/**
+ * Resolve the agent's primary human — the earliest `agent_group_members` row
+ * (D5 one-human-one-agent means there's normally at most one) — plus the
+ * local_name of whichever channel destination is their reply lane (the `cli`
+ * web lane wired by `wireWebLane`/`create_agent`). Returns undefined for
+ * agents with no bound human (e.g. internal/company agents) or no resolvable
+ * reply lane, so container.json simply omits the field.
+ */
+function resolvePrimaryUser(agentGroupId: string): ContainerConfig['primaryUser'] {
+  const [firstMember] = getMembers(agentGroupId);
+  if (!firstMember) return undefined;
+
+  const human = getUser(firstMember.user_id);
+  if (!human) return undefined;
+
+  const humanLane = getDestinations(agentGroupId).find((d) => {
+    if (d.target_type !== 'channel') return false;
+    return getMessagingGroup(d.target_id)?.channel_type === 'cli';
+  });
+  if (!humanLane) return undefined;
+
+  const email = human.display_name?.includes('@') ? human.display_name : undefined;
+  return { name: human.display_name ?? human.id, email, destination: humanLane.local_name };
 }
 
 /**
@@ -106,6 +136,11 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   // Durable task-board WRITE tools are manager-only; workers plan with their own
   // TodoWrite + report_status (SOP). Gate per leadership, recomputed each spawn.
   config.disallowedTools = disallowedToolsForRole(isLeader);
+
+  // Surface the bound human structurally (agent "primary user" identity —
+  // fixes the misroute where an agent sent a report to `parent` instead of
+  // its owner). Recomputed every spawn; absent for agents with no bound human.
+  config.primaryUser = resolvePrimaryUser(agentGroupId);
 
   // Auto-compact window follows the model tier each spawn (cloud models hold far
   // more than the 165K default; local gemma must stay at 165K). Explicit env wins.

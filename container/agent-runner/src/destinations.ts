@@ -10,6 +10,7 @@
  * The host re-validates on the delivery side against the central DB,
  * so even if this table is stale the host's enforcement is authoritative.
  */
+import type { PrimaryUser } from './config.js';
 import { getInboundDb } from './db/connection.js';
 
 export interface DestinationEntry {
@@ -79,16 +80,34 @@ export function findByRouting(
  * per-agent-group and changes when the operator renames an agent, while
  * the shared base is identical across all agents.
  */
-export function buildSystemPromptAddendum(assistantName?: string): string {
+export function buildSystemPromptAddendum(assistantName?: string, primaryUser?: PrimaryUser): string {
   const sections: string[] = [];
 
   if (assistantName) {
     sections.push(['# You are ' + assistantName, '', `Your name is **${assistantName}**. Use it when the channel asks who you are, when introducing yourself, and when signing any message that explicitly calls for a signature.`].join('\n'));
   }
 
+  if (primaryUser) {
+    sections.push(buildPrimaryUserSection(primaryUser));
+  }
+
   sections.push(buildDestinationsSection());
 
   return sections.join('\n\n');
+}
+
+/**
+ * Surface the agent's bound human structurally — this is who reports/files
+ * should go to by default, not `parent` or any other agent (dev-log: the
+ * chawanrat misroute, a report sent to `parent` instead of the human owner).
+ */
+function buildPrimaryUserSection(primaryUser: PrimaryUser): string {
+  const contact = primaryUser.email ? `${primaryUser.name} (${primaryUser.email})` : primaryUser.name;
+  return [
+    '## Your user',
+    '',
+    `Your primary user is ${contact}. Reply to them by default — omit \`to\`, or use \`to:'${primaryUser.destination}'\`. Send reports and files to them, NOT to other agents. \`parent\` and any other agents are colleagues, not your user.`,
+  ].join('\n');
 }
 
 function buildDestinationsSection(): string {
@@ -106,15 +125,23 @@ function buildDestinationsSection(): string {
   if (all.length === 1) {
     const d = all[0];
     const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
-    lines.push(`Your destination is \`${d.name}\`${label}.`);
+    lines.push(`Your destination is \`${d.name}\`${label}.`, '');
   } else {
     lines.push('You can send messages to the following destinations:', '');
-    for (const d of all) {
-      const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
-      lines.push(`- \`${d.name}\`${label}`);
-    }
+    const people = all.filter((d) => d.type === 'channel');
+    const agents = all.filter((d) => d.type === 'agent');
+    const pushGroup = (heading: string, group: DestinationEntry[]) => {
+      if (group.length === 0) return;
+      lines.push(heading, '');
+      for (const d of group) {
+        const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
+        lines.push(`- \`${d.name}\`${label}`);
+      }
+      lines.push('');
+    };
+    pushGroup('**Your people:**', people);
+    pushGroup("**Other agents (colleagues — don't send your user's files here):**", agents);
   }
-  lines.push('');
   lines.push(
     'To send anything you MUST call the `send_message` tool — `send_message({ to: "name", text: "…" })` (use `send_file` for files). This is the ONLY way your words reach a destination: plain text in your reply, and anything inside `<message>…</message>` or `<internal>…</internal>` tags, is scratchpad — logged, never delivered.',
   );

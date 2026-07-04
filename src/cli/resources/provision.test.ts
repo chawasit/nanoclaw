@@ -141,13 +141,18 @@ describe('provision — happy path orchestration', () => {
     // $0 model + endpoint applied to the NEW agent.
     expect(mockUpdateScalars).toHaveBeenCalledWith('ag-new', { model: 'gemma-4-26B-A4B' });
 
-    // The reply-routing destination is named exactly `local-cli`.
+    // The reply-routing destination is named exactly `user`.
     expect(mockCreateDestination).toHaveBeenCalledWith(
-      expect.objectContaining({ agent_group_id: 'ag-new', local_name: 'local-cli', target_type: 'channel' }),
+      expect.objectContaining({ agent_group_id: 'ag-new', local_name: 'user', target_type: 'channel' }),
     );
-    // Lane mg on the unique web platform id, instance=cli.
+    // Lane mg on the unique web platform id, instance=cli, labeled with the human's email.
     expect(mockCreateMg).toHaveBeenCalledWith(
-      expect.objectContaining({ channel_type: 'cli', platform_id: 'web:google:1234567890', instance: 'cli' }),
+      expect.objectContaining({
+        channel_type: 'cli',
+        platform_id: 'web:google:1234567890',
+        instance: 'cli',
+        name: 'alice@trirat.co',
+      }),
     );
     expect(mockCreateMga).toHaveBeenCalledTimes(1);
     // Session minted by routing a bootstrap at the lane.
