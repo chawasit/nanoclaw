@@ -5,7 +5,7 @@ import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages, writeMessageOut } from './db/messages-out.js';
 import { recordDelivery } from './delivery-tracker.js';
 import { formatMessages, extractRouting } from './formatter.js';
-import { isCorruptionError, looksLikeMalformedMessageAttempt, processQuery } from './poll-loop.js';
+import { isCorruptionError, looksLikeMalformedMessageAttempt, processQuery, runPollLoop } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
 import type { AgentQuery, ProviderEvent } from './providers/types.js';
 
@@ -29,6 +29,20 @@ function insertMessage(
      VALUES (?, ?, datetime('now'), 'pending', ?, ?, ?, ?)`,
     )
     .run(id, kind, opts?.processAfter ?? null, opts?.trigger ?? 1, opts?.onWake ?? 0, JSON.stringify(content));
+}
+
+/**
+ * Seed the host-written session_routing row (id=1) — the session's canonical
+ * reply lane that getSessionRouting() reads and poll-loop now uses as the
+ * source of truth for user-lane classification + host-side outbound writes.
+ * For a channel-originated session this equals the inbound routing; on the
+ * Circle ingress path the inbound rows are NULL-channel while this row still
+ * carries the real (cli/local) lane — which is exactly the live bug shape.
+ */
+function seedSessionRouting(channelType: string | null, platformId: string | null, threadId: string | null = null): void {
+  getInboundDb()
+    .prepare(`INSERT INTO session_routing (id, channel_type, platform_id, thread_id) VALUES (1, ?, ?, ?)`)
+    .run(channelType, platformId, threadId);
 }
 
 describe('formatter', () => {
@@ -414,6 +428,8 @@ const ERR_ROUTING = {
 
 describe('error result with no <message> envelope', () => {
   it('delivers a budget/billing error to the triggering channel and does not nudge', async () => {
+    // Session lane matches the inbound routing (channel-originated session).
+    seedSessionRouting('discord', 'chan-1');
     const budgetText = 'Spending limit reached. Add your own key at https://example.com/keys';
     const { query, pushes } = makeResultQuery({ type: 'result', text: budgetText, isError: true });
 
@@ -433,6 +449,7 @@ describe('error result with no <message> envelope', () => {
     // text, so the nudge now only fires for peer-directed turns. Exercise it on a
     // peer lane ('agent'); do NOT mutate the shared ERR_ROUTING (the error test
     // above pins its channel_type to 'discord').
+    seedSessionRouting('agent', 'chan-1');
     const PEER_ROUTING = { ...ERR_ROUTING, channelType: 'agent' };
     const { query, pushes } = makeResultQuery({ type: 'result', text: 'bare text, no send call' });
 
@@ -488,6 +505,7 @@ describe('result-text <message> wrappers are no longer delivered (hard-disabled)
 
   it('a clean <message> block in result text delivers NOTHING and nudges toward send_message', async () => {
     seedDest('discord-main', 'discord', 'chan-1');
+    seedSessionRouting('agent', 'chan-1');
     const { query, pushes } = oneShot('<message to="discord-main">All set — report delivered.</message>');
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     // The wrapper path is gone — no outbound row is written from result text.
@@ -499,6 +517,7 @@ describe('result-text <message> wrappers are no longer delivered (hard-disabled)
 
   it('a nested-opener reasoning leak also delivers nothing and nudges', async () => {
     seedDest('discord-main', 'discord', 'chan-1');
+    seedSessionRouting('agent', 'chan-1');
     const leak =
       '<message to="discord-main">Let me reply. I will wrap in <message to="discord-main">. ' +
       'End turn. <message to="discord-main"> the real text </message>';
@@ -558,6 +577,7 @@ describe('send_message nudge (undelivered turns)', () => {
 
   it('points a garbled <message> tag at send_message (wrapper nudge, not generic)', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
+    seedSessionRouting('agent', 'chan-1');
     // The exact live shape: garbled open tag, valid close.
     const { query, pushes } = oneShot('<messaggio a="telegram">\nik — morning brief…\n</message>');
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
@@ -569,6 +589,7 @@ describe('send_message nudge (undelivered turns)', () => {
 
   it('uses the generic send_message nudge for plain unwrapped prose', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
+    seedSessionRouting('agent', 'chan-1');
     const { query, pushes } = oneShot('ik — here is the brief, all clear.');
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     expect(getUndeliveredMessages()).toHaveLength(0);
@@ -579,6 +600,7 @@ describe('send_message nudge (undelivered turns)', () => {
 
   it('a turn with only <internal> scratchpad is NOT nudged (pure thinking, no reply)', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
+    seedSessionRouting('agent', 'chan-1');
     const { query, pushes } = oneShot('<internal>thinking… no reply needed this turn</internal>');
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     expect(getUndeliveredMessages()).toHaveLength(0);
@@ -587,6 +609,7 @@ describe('send_message nudge (undelivered turns)', () => {
 
   it('a turn emitting [[SLEEP_SUMMARY_COMPLETE]] is NOT nudged (intentional EOD completion, no send)', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
+    seedSessionRouting('agent', 'chan-1');
     const { query, pushes } = oneShot('Memory consolidated and handoff.md written.\n[[SLEEP_SUMMARY_COMPLETE]]');
     await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     expect(getUndeliveredMessages()).toHaveLength(0);
@@ -612,6 +635,7 @@ describe('delivered turn (send_message) is not nudged', () => {
 
   it('when the agent calls send_message mid-turn, no nudge fires even with trailing text', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
+    seedSessionRouting('telegram', 'chan-1');
     const pushes: string[] = [];
     // Simulate the agent: between init and result it calls send_message — which
     // writes an outbound row AND records a delivery — then emits trailing prose.
@@ -646,6 +670,8 @@ describe('delivered turn (send_message) is not nudged', () => {
 
   it('a plain-text reply AFTER an earlier delivery IS nudged now (re-arming latch, dev-log/0189)', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
+    // Peer lane: the undelivered second turn nudges (a user lane would auto-deliver).
+    seedSessionRouting('agent', 'chan-1');
     const pushes: string[] = [];
     // The owner-reported live gemma-4 CoS pattern (2026-07-05): the agent delivers
     // an early reply via send_message, then on a LATER turn answers in plain text
@@ -686,6 +712,8 @@ describe('delivered turn (send_message) is not nudged', () => {
 
   it('caps nudges per stream (MAX_NUDGES_PER_STREAM) so a flaky model cannot loop into OOM', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
+    // Peer lane: every undelivered cycle nudges (a user lane would auto-deliver).
+    seedSessionRouting('agent', 'chan-1');
     const pushes: string[] = [];
     // Worst case: 8 deliver→undeliver cycles. Each delivery re-arms the latch, so
     // without a cap every cycle would nudge (8×). The absolute per-stream cap (5)
@@ -729,11 +757,15 @@ describe('relaxed delivery — user-lane assistant turns auto-deliver (feat/rela
   const CLI_ROUTING = { platformId: 'local', channelType: 'cli', threadId: null, inReplyTo: 'm1' };
 
   it('a plain user-lane reply with no send tool is auto-delivered as an outbound row and NOT nudged', async () => {
+    seedSessionRouting('cli', 'local');
     const { query, pushes } = makeResultQuery({ type: 'result', text: 'here is your answer' });
     await processQuery(query, CLI_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     const out = getUndeliveredMessages();
     expect(out).toHaveLength(1);
     expect(out[0].channel_type).toBe('cli');
+    // Both halves of the WS-tailer filter pair must be stamped — platform_id
+    // being NULL is half the live bug.
+    expect(out[0].platform_id).toBe('local');
     expect(out[0].kind).toBe('chat');
     expect(out[0].in_reply_to).toBe('m1');
     expect(JSON.parse(out[0].content).text).toBe('here is your answer');
@@ -742,6 +774,7 @@ describe('relaxed delivery — user-lane assistant turns auto-deliver (feat/rela
   });
 
   it('a peer-lane (agent) undelivered reply still nudges and writes NO auto-deliver row', async () => {
+    seedSessionRouting('agent', 'ag-parent');
     const PEER_ROUTING = { platformId: 'ag-parent', channelType: 'agent', threadId: null, inReplyTo: 'm1' };
     const { query, pushes } = makeResultQuery({ type: 'result', text: 'peer-directed note, no send call' });
     await processQuery(query, PEER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
@@ -751,6 +784,7 @@ describe('relaxed delivery — user-lane assistant turns auto-deliver (feat/rela
   });
 
   it('INVARIANT: send_message already delivered on a user lane → no auto-deliver row (no double delivery) and no nudge', async () => {
+    seedSessionRouting('cli', 'local');
     const pushes: string[] = [];
     // The agent calls send_message mid-turn (one row + recordDelivery), then emits
     // trailing prose. deliveredThisTurn is true → undelivered is false → the
@@ -784,6 +818,7 @@ describe('relaxed delivery — user-lane assistant turns auto-deliver (feat/rela
   });
 
   it('a [[SLEEP_SUMMARY_COMPLETE]] turn on a user lane is neither auto-delivered nor nudged', async () => {
+    seedSessionRouting('cli', 'local');
     const { query, pushes } = makeResultQuery({
       type: 'result',
       text: 'Memory consolidated and handoff.md written.\n[[SLEEP_SUMMARY_COMPLETE]]',
@@ -794,6 +829,7 @@ describe('relaxed delivery — user-lane assistant turns auto-deliver (feat/rela
   });
 
   it('an isError turn on a user lane takes the error path (delivered once), not the auto-deliver branch', async () => {
+    seedSessionRouting('cli', 'local');
     const errText = 'Spending limit reached. Add your own key at https://example.com/keys';
     const { query, pushes } = makeResultQuery({ type: 'result', text: errText, isError: true });
     await processQuery(query, CLI_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
@@ -801,5 +837,68 @@ describe('relaxed delivery — user-lane assistant turns auto-deliver (feat/rela
     expect(out).toHaveLength(1);
     expect(JSON.parse(out[0].content).text).toBe(errText);
     expect(pushes).toHaveLength(0);
+  });
+});
+
+describe('LIVE Circle shape: NULL inbound routing + cli/local session lane (bug fix)', () => {
+  // The exact production failure the original relaxed-delivery tests missed:
+  // Circle host-writes its inbound rows with channel_type=NULL / platform_id=NULL
+  // (zero-spine-code ingress), while the session's real reply lane lives in
+  // session_routing (cli/local). The pre-fix code classified the user lane from
+  // the NULL inbound routing → misread it as non-user → dropped the reply and
+  // fired the stale nudge. These lock the fix: classification + host writes come
+  // from getSessionRouting(), so the plain reply is auto-delivered stamped
+  // cli/local (never NULL), and a peer session still nudges.
+  const NULL_INBOUND = { platformId: null, channelType: null, threadId: null, inReplyTo: 'm1' };
+
+  it('plain undelivered turn (NULL inbound, cli session) is auto-delivered stamped cli/local and NOT nudged', async () => {
+    seedSessionRouting('cli', 'local');
+    const { query, pushes } = makeResultQuery({ type: 'result', text: 'the answer to your question' });
+    await processQuery(query, NULL_INBOUND, ['m1'], 'claude', undefined, 'prompt', undefined);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    // Stamped from the SESSION lane, not the NULL inbound routing — both halves
+    // of the WS-tailer filter pair present, so Circle can stream it to the PWA.
+    expect(out[0].channel_type).toBe('cli');
+    expect(out[0].platform_id).toBe('local');
+    expect(out[0].channel_type).not.toBeNull();
+    expect(out[0].in_reply_to).toBe('m1');
+    expect(JSON.parse(out[0].content).text).toBe('the answer to your question');
+    // No stale "nothing was delivered" nudge on the user lane.
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('a peer/a2a session (session_routing agent, NULL inbound) still nudges and writes no auto-deliver row', async () => {
+    seedSessionRouting('agent', 'ag-parent');
+    const { query, pushes } = makeResultQuery({ type: 'result', text: 'peer note, no send call' });
+    await processQuery(query, NULL_INBOUND, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain('nothing was delivered');
+  });
+
+  it('/clear confirmation (NULL inbound, cli session) is stamped with the session lane, not NULL', async () => {
+    seedSessionRouting('cli', 'local');
+    // Live shape: the inbound /clear row carries NULL channel_type/platform_id.
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, thread_id, content)
+         VALUES ('m1', 'chat', datetime('now'), 'pending', NULL, NULL, NULL, ?)`,
+      )
+      .run(JSON.stringify({ text: '/clear' }));
+
+    const controller = new AbortController();
+    // Abort mid-loop: iteration 1 processes /clear + writes the confirmation,
+    // iteration 2 finds an empty queue and sleeps, the abort lands during that
+    // sleep, iteration 3 returns.
+    setTimeout(() => controller.abort(), 50);
+    const provider = new MockProvider({}, (p) => `echo: ${p}`);
+    await runPollLoop({ provider, providerName: 'mock', cwd: '/tmp', signal: controller.signal });
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('Session cleared.');
+    expect(out[0].channel_type).toBe('cli');
+    expect(out[0].platform_id).toBe('local');
   });
 });
