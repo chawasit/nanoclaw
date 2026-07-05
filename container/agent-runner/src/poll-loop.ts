@@ -3,6 +3,7 @@ import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } 
 import { writeMessageOut } from './db/messages-out.js';
 import { touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
+import { getSessionRouting, type SessionRouting } from './db/session-routing.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
 import { deliveryCount } from './delivery-tracker.js';
 import {
@@ -155,6 +156,16 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     markProcessing(ids);
 
     const routing = extractRouting(messages);
+    // The session's REAL reply lane, written once by the host at spawn
+    // (session_routing WHERE id=1). This is the canonical outbound target for
+    // EVERY host-side write below — NOT the inbound-derived `routing`, whose
+    // channel_type/platform_id are NULL on the Circle ingress path (the host
+    // writes Circle inbound rows with null routing by design). A null-stamped
+    // outbound row is filtered out by Circle's origin-lane WS tailer and never
+    // reaches the PWA. For channel-originated sessions sessionRouting == the
+    // inbound routing, so behaviour there is unchanged. `routing.inReplyTo`
+    // (the inbound message id) is still the correct reply-linkage handle.
+    const sessionRouting = getSessionRouting();
 
     // Command handling: the host router gates filtered and unauthorized
     // admin commands before they reach the container. The only command
@@ -170,9 +181,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         writeMessageOut({
           id: generateId(),
           kind: 'chat',
-          platform_id: routing.platformId,
-          channel_type: routing.channelType,
-          thread_id: routing.threadId,
+          platform_id: sessionRouting.platform_id,
+          channel_type: sessionRouting.channel_type,
+          thread_id: sessionRouting.thread_id,
           content: JSON.stringify({ text: 'Session cleared.' }),
         });
         commandIds.push(msg.id);
@@ -183,9 +194,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         writeMessageOut({
           id: generateId(),
           kind: 'chat',
-          platform_id: routing.platformId,
-          channel_type: routing.channelType,
-          thread_id: routing.threadId,
+          platform_id: sessionRouting.platform_id,
+          channel_type: sessionRouting.channel_type,
+          thread_id: sessionRouting.thread_id,
           content: JSON.stringify({ text: uploadTrace() }),
         });
         commandIds.push(msg.id);
@@ -274,13 +285,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         clearContinuation(config.providerName);
       }
 
-      // Write error response so the user knows something went wrong
+      // Write error response so the user knows something went wrong. Stamp the
+      // session's reply lane (not the NULL-on-Circle inbound routing) so the
+      // notice actually reaches the user.
       writeMessageOut({
         id: generateId(),
         kind: 'chat',
-        platform_id: routing.platformId,
-        channel_type: routing.channelType,
-        thread_id: routing.threadId,
+        platform_id: sessionRouting.platform_id,
+        channel_type: sessionRouting.channel_type,
+        thread_id: sessionRouting.thread_id,
         content: JSON.stringify({ text: `Error: ${errMsg}` }),
       });
     } finally {
@@ -343,6 +356,19 @@ export async function processQuery(
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
+  // The session's REAL reply lane (host-written session_routing WHERE id=1),
+  // fixed for the session. This — NOT the inbound-derived `routing` — is the
+  // source of truth for user-lane classification and for every host-side
+  // outbound write in this function. On the Circle ingress path the inbound
+  // rows carry channel_type=NULL/platform_id=NULL by design, so the old
+  // `routing.channelType`-based classification misread the live user lane as
+  // non-user (dropping the reply + firing a stale nudge), and a NULL-stamped
+  // auto-deliver row was filtered out by Circle's origin-lane WS tailer. For a
+  // channel-originated session sessionRouting == the inbound routing, so
+  // behaviour there is unchanged. This mirrors what the send_message MCP tool
+  // already uses (mcp-tools/core.ts resolveRouting → getSessionRouting), which
+  // is why normal send_message replies reach Circle but the auto-deliver did not.
+  const sessionRouting: SessionRouting = getSessionRouting();
   // Delivery-aware turn tracking (send_message-only protocol, dev-log/0083).
   // The ONLY way a reply reaches a destination is the send_message / send_file
   // tool; result-text <message> wrappers are no longer dispatched. We snapshot
@@ -541,16 +567,18 @@ export async function processQuery(
         // it is NOT the 'agent' peer lane) that produced visible text but called no
         // send tool is auto-relayed to the user below — a plain reply needs no
         // send_message. Peer-directed ('agent') undelivered turns are NOT auto-
-        // relayed; they still nudge. A null channel (no routing) is treated as
-        // non-user, so it keeps the existing nudge path.
-        const isUserLane = routing.channelType != null && routing.channelType !== 'agent';
+        // relayed; they still nudge. A null channel (no session routing) is treated
+        // as non-user, so it keeps the existing nudge path. Classified from the
+        // SESSION lane (sessionRouting), not the inbound routing — Circle's inbound
+        // rows are NULL-channel, which the old check misread as non-user.
+        const isUserLane = sessionRouting.channel_type != null && sessionRouting.channel_type !== 'agent';
 
         if (!deliveredThisTurn && event.isError === true && event.text) {
           // Non-retryable error turn (e.g. a 403 billing_error) that delivered
           // nothing: surface the notice to the triggering channel instead of
           // dropping it as scratchpad, and do NOT nudge — re-prompting would
           // just re-hammer the failing gateway turn after turn.
-          deliverErrorResult(event.text, routing);
+          deliverErrorResult(event.text, sessionRouting, routing.inReplyTo);
           notifyExchangeComplete(onExchangeComplete, {
             prompt: archivePrompts[0] ?? initialPrompt,
             result: event.text,
@@ -572,9 +600,9 @@ export async function processQuery(
             id: generateId(),
             in_reply_to: routing.inReplyTo,
             kind: 'chat',
-            platform_id: routing.platformId,
-            channel_type: routing.channelType,
-            thread_id: routing.threadId,
+            platform_id: sessionRouting.platform_id,
+            channel_type: sessionRouting.channel_type,
+            thread_id: sessionRouting.thread_id,
             content: JSON.stringify({ text: scratchpad }),
           });
           notifyExchangeComplete(onExchangeComplete, {
@@ -679,15 +707,15 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * block does, minus the `Error:` prefix — the provider's text is already a
  * user-facing message.
  */
-function deliverErrorResult(text: string, routing: RoutingContext): void {
+function deliverErrorResult(text: string, sessionRouting: SessionRouting, inReplyTo: string | null): void {
   log('Error result with no delivery — delivering provider notice to channel');
   writeMessageOut({
     id: generateId(),
-    in_reply_to: routing.inReplyTo,
+    in_reply_to: inReplyTo,
     kind: 'chat',
-    platform_id: routing.platformId,
-    channel_type: routing.channelType,
-    thread_id: routing.threadId,
+    platform_id: sessionRouting.platform_id,
+    channel_type: sessionRouting.channel_type,
+    thread_id: sessionRouting.thread_id,
     content: JSON.stringify({ text }),
   });
 }
