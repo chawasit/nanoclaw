@@ -428,10 +428,15 @@ describe('error result with no <message> envelope', () => {
     expect(pushes).toHaveLength(0);
   });
 
-  it('still nudges (and does not deliver) a normal undelivered result', async () => {
+  it('still nudges (and does not deliver) a normal undelivered PEER-directed result', async () => {
+    // Relaxed delivery (feat/relaxed-delivery) auto-delivers undelivered USER-lane
+    // text, so the nudge now only fires for peer-directed turns. Exercise it on a
+    // peer lane ('agent'); do NOT mutate the shared ERR_ROUTING (the error test
+    // above pins its channel_type to 'discord').
+    const PEER_ROUTING = { ...ERR_ROUTING, channelType: 'agent' };
     const { query, pushes } = makeResultQuery({ type: 'result', text: 'bare text, no send call' });
 
-    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    await processQuery(query, PEER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
 
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(1);
@@ -476,7 +481,10 @@ describe('result-text <message> wrappers are no longer delivered (hard-disabled)
       query: { push: (m: string) => { pushes.push(m); }, end: () => {}, events: events(), abort: () => {} } as AgentQuery,
     };
   }
-  const ROUTING = { platformId: 'chan-1', channelType: 'discord', threadId: null, inReplyTo: 'm1' };
+  // Relaxed delivery auto-delivers undelivered USER-lane text, so the wrapper
+  // nudge now only applies to peer-directed turns — exercise these on the 'agent'
+  // peer lane (the destination seed still feeds buildSendNudge's name list).
+  const ROUTING = { platformId: 'chan-1', channelType: 'agent', threadId: null, inReplyTo: 'm1' };
 
   it('a clean <message> block in result text delivers NOTHING and nudges toward send_message', async () => {
     seedDest('discord-main', 'discord', 'chan-1');
@@ -542,7 +550,11 @@ describe('send_message nudge (undelivered turns)', () => {
       query: { push: (m: string) => { pushes.push(m); }, end: () => {}, events: events(), abort: () => {} } as AgentQuery,
     };
   }
-  const ROUTING = { platformId: 'chan-1', channelType: 'telegram', threadId: null, inReplyTo: 'm1' };
+  // Relaxed delivery auto-delivers undelivered USER-lane text; the send_message
+  // nudge now fires only for peer-directed turns, so drive this block on the
+  // 'agent' peer lane. (The internal-only / sleep-summary cases below are no-ops
+  // on any lane — they never produce deliverable scratchpad.)
+  const ROUTING = { platformId: 'chan-1', channelType: 'agent', threadId: null, inReplyTo: 'm1' };
 
   it('points a garbled <message> tag at send_message (wrapper nudge, not generic)', async () => {
     seedDest('telegram', 'telegram', 'chan-1');
@@ -591,6 +603,11 @@ describe('delivered turn (send_message) is not nudged', () => {
       )
       .run(name, name, channelType, platformId);
   }
+  // User lane ('telegram'): the mid-turn-send test below is the no-double-delivery
+  // invariant on a USER lane — a real send_message keeps `deliveredThisTurn` true,
+  // so the relaxed-delivery auto-deliver branch never fires. The two re-arming
+  // latch / cap tests that follow drive a PEER lane (they assert nudges, which
+  // only fire peer-directed now).
   const ROUTING = { platformId: 'chan-1', channelType: 'telegram', threadId: null, inReplyTo: 'm1' };
 
   it('when the agent calls send_message mid-turn, no nudge fires even with trailing text', async () => {
@@ -660,7 +677,9 @@ describe('delivered turn (send_message) is not nudged', () => {
       events: events(),
       abort: () => {},
     } as AgentQuery;
-    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    // Peer lane so the undelivered second turn nudges (user lane would auto-deliver).
+    const PEER_ROUTING = { ...ROUTING, channelType: 'agent' };
+    await processQuery(query, PEER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     // The delivery re-armed the nudge → the later undelivered reply is caught.
     expect(pushes.some((p) => p.includes('nothing was delivered'))).toBe(true);
   });
@@ -697,9 +716,90 @@ describe('delivered turn (send_message) is not nudged', () => {
       events: events(),
       abort: () => {},
     } as AgentQuery;
-    await processQuery(query, ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    // Peer lane so every undelivered cycle nudges (user lane would auto-deliver).
+    const PEER_ROUTING = { ...ROUTING, channelType: 'agent' };
+    await processQuery(query, PEER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
     const nudges = pushes.filter((p) => p.includes('nothing was delivered')).length;
     // Capped at 5 despite 8 undelivered turns — proves the OOM backstop holds.
     expect(nudges).toBe(5);
+  });
+});
+
+describe('relaxed delivery — user-lane assistant turns auto-deliver (feat/relaxed-delivery)', () => {
+  const CLI_ROUTING = { platformId: 'local', channelType: 'cli', threadId: null, inReplyTo: 'm1' };
+
+  it('a plain user-lane reply with no send tool is auto-delivered as an outbound row and NOT nudged', async () => {
+    const { query, pushes } = makeResultQuery({ type: 'result', text: 'here is your answer' });
+    await processQuery(query, CLI_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(out[0].channel_type).toBe('cli');
+    expect(out[0].kind).toBe('chat');
+    expect(out[0].in_reply_to).toBe('m1');
+    expect(JSON.parse(out[0].content).text).toBe('here is your answer');
+    // A normal user reply no longer needs send_message → no nudge.
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('a peer-lane (agent) undelivered reply still nudges and writes NO auto-deliver row', async () => {
+    const PEER_ROUTING = { platformId: 'ag-parent', channelType: 'agent', threadId: null, inReplyTo: 'm1' };
+    const { query, pushes } = makeResultQuery({ type: 'result', text: 'peer-directed note, no send call' });
+    await processQuery(query, PEER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain('nothing was delivered');
+  });
+
+  it('INVARIANT: send_message already delivered on a user lane → no auto-deliver row (no double delivery) and no nudge', async () => {
+    const pushes: string[] = [];
+    // The agent calls send_message mid-turn (one row + recordDelivery), then emits
+    // trailing prose. deliveredThisTurn is true → undelivered is false → the
+    // auto-deliver branch must NOT fire, so exactly one row exists (no duplicate).
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
+      writeMessageOut({
+        id: 'out-user-tool-1',
+        kind: 'chat',
+        platform_id: 'local',
+        channel_type: 'cli',
+        thread_id: null,
+        content: JSON.stringify({ text: 'delivered via tool' }),
+      });
+      recordDelivery();
+      yield { type: 'result', text: 'ok, sent it.' } as ProviderEvent;
+    }
+    const query = {
+      push: (m: string) => {
+        pushes.push(m);
+      },
+      end: () => {},
+      events: events(),
+      abort: () => {},
+    } as AgentQuery;
+    await processQuery(query, CLI_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('delivered via tool');
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('a [[SLEEP_SUMMARY_COMPLETE]] turn on a user lane is neither auto-delivered nor nudged', async () => {
+    const { query, pushes } = makeResultQuery({
+      type: 'result',
+      text: 'Memory consolidated and handoff.md written.\n[[SLEEP_SUMMARY_COMPLETE]]',
+    });
+    await processQuery(query, CLI_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('an isError turn on a user lane takes the error path (delivered once), not the auto-deliver branch', async () => {
+    const errText = 'Spending limit reached. Add your own key at https://example.com/keys';
+    const { query, pushes } = makeResultQuery({ type: 'result', text: errText, isError: true });
+    await processQuery(query, CLI_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe(errText);
+    expect(pushes).toHaveLength(0);
   });
 });
