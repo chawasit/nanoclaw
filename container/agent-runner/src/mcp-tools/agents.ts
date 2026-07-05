@@ -40,7 +40,7 @@ export const createAgent: McpToolDefinition = {
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Human-readable name (also becomes your destination name for this agent)' },
-        instructions: { type: 'string', description: 'CLAUDE.md content for the new agent (personality, role, instructions)' },
+        instructions: { type: 'string', description: "Seed text for the new agent's CLAUDE.local.md memory file (its starting personality, role, and instructions). The shared base CLAUDE.md is loaded separately — don't restate base behavior here." },
         roleBrief: {
           type: 'object',
           description:

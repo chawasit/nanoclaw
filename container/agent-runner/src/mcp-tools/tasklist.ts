@@ -140,14 +140,14 @@ export const reportStatus: McpToolDefinition = {
   },
 };
 
-interface TaskRow {
+export interface TaskRow {
   id: string;
   agent_group_id: string;
   title: string;
   status: string;
   blocked_reason: string | null;
 }
-interface StatusRow {
+export interface StatusRow {
   agent_group_id: string;
   state: string;
   summary: string | null;
@@ -156,16 +156,67 @@ interface StatusRow {
   updated_at: string;
 }
 
+const DEFAULT_TASK_LIST_LIMIT = 50;
+
+/**
+ * Render the task board, bounding the row count so scope="all" can't dump an
+ * unbounded pile at the agent. When rows are clipped a footer states how many
+ * were withheld and steers the agent to filter (status= / scope="mine") rather
+ * than page through everything.
+ */
+export function formatTaskBoard(tasks: TaskRow[], statuses: StatusRow[], scope: string, limit: number): string {
+  const lines: string[] = [];
+
+  if (tasks.length === 0) {
+    lines.push('No tasks.');
+  } else {
+    for (const t of tasks.slice(0, limit)) {
+      const who = scope === 'all' ? `${t.agent_group_id} ` : '';
+      const blocked = t.status === 'blocked' && t.blocked_reason ? ` (blocked: ${t.blocked_reason})` : '';
+      lines.push(`- ${who}${t.id} [${t.status}] ${t.title}${blocked}`);
+    }
+    if (tasks.length > limit) {
+      const more = tasks.length - limit;
+      const scopeHint = scope === 'all' ? ' or scope="mine"' : '';
+      lines.push(`… ${more} more task${more === 1 ? '' : 's'} — narrow with status=…${scopeHint}, or raise limit.`);
+    }
+  }
+
+  if (scope === 'all') {
+    lines.push('', '## Status board');
+    if (statuses.length === 0) {
+      lines.push('No status reports yet.');
+    } else {
+      for (const s of statuses.slice(0, limit)) {
+        const bits = [s.summary, s.blockers ? `blockers: ${s.blockers}` : '', s.eta ? `eta: ${s.eta}` : '']
+          .filter(Boolean)
+          .join(' · ');
+        lines.push(`- ${s.agent_group_id} [${s.state}] ${bits}`);
+      }
+      if (statuses.length > limit) {
+        const more = statuses.length - limit;
+        lines.push(`… ${more} more status row${more === 1 ? '' : 's'} — raise limit to see all.`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export const taskList: McpToolDefinition = {
   tool: {
     name: 'task_list',
     description:
-      'Read the shared work board. scope="mine" (default) shows only your tasks; scope="all" shows every agent\'s tasks plus the status board (use this for a standup overview). Optionally filter tasks by status.',
+      'Read the shared work board. scope="mine" (default) shows only your tasks; scope="all" shows every agent\'s tasks plus the status board (use this for a standup overview). Optionally filter tasks by status. Output is capped at `limit` rows (default 50) with a truncation footer when clipped — prefer narrowing with status= or scope="mine" over raising the limit.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         scope: { type: 'string', description: 'mine (default) | all', enum: ['mine', 'all'] },
         status: { type: 'string', description: 'Filter tasks by status: todo | doing | blocked | done' },
+        limit: {
+          type: 'integer',
+          description: 'Max rows to return before truncating (default 50). Filter with status=/scope instead of raising this.',
+        },
       },
     },
   },
@@ -183,6 +234,8 @@ export const taskList: McpToolDefinition = {
       const mine = loadConfig().agentGroupId;
       const scope = (args.scope as string) || 'mine';
       const status = args.status as string | undefined;
+      const limit =
+        typeof args.limit === 'number' && args.limit > 0 ? Math.floor(args.limit) : DEFAULT_TASK_LIST_LIMIT;
 
       const where: string[] = [];
       const params: string[] = [];
@@ -200,35 +253,14 @@ export const taskList: McpToolDefinition = {
         ' ORDER BY created_at ASC';
       const tasks = db.query(sql).all(...params) as TaskRow[];
 
-      const lines: string[] = [];
-      if (tasks.length === 0) {
-        lines.push('No tasks.');
-      } else {
-        for (const t of tasks) {
-          const who = scope === 'all' ? `${t.agent_group_id} ` : '';
-          const blocked = t.status === 'blocked' && t.blocked_reason ? ` (blocked: ${t.blocked_reason})` : '';
-          lines.push(`- ${who}${t.id} [${t.status}] ${t.title}${blocked}`);
-        }
-      }
+      const statuses =
+        scope === 'all'
+          ? (db
+              .query('SELECT agent_group_id, state, summary, blockers, eta, updated_at FROM statuses ORDER BY updated_at DESC')
+              .all() as StatusRow[])
+          : [];
 
-      if (scope === 'all') {
-        const statuses = db
-          .query('SELECT agent_group_id, state, summary, blockers, eta, updated_at FROM statuses ORDER BY updated_at DESC')
-          .all() as StatusRow[];
-        lines.push('', '## Status board');
-        if (statuses.length === 0) {
-          lines.push('No status reports yet.');
-        } else {
-          for (const s of statuses) {
-            const bits = [s.summary, s.blockers ? `blockers: ${s.blockers}` : '', s.eta ? `eta: ${s.eta}` : '']
-              .filter(Boolean)
-              .join(' · ');
-            lines.push(`- ${s.agent_group_id} [${s.state}] ${bits}`);
-          }
-        }
-      }
-
-      return ok(lines.join('\n'));
+      return ok(formatTaskBoard(tasks, statuses, scope, limit));
     } finally {
       db.close();
     }

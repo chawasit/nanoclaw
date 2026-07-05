@@ -82,7 +82,7 @@ export const addMcpServer: McpToolDefinition = {
   tool: {
     name: 'add_mcp_server',
     description:
-      'Wire an EXISTING third-party MCP server into YOUR per-agent runtime config — you must already know the exact `command` + `args` to invoke it (e.g. `npx @modelcontextprotocol/server-github`). Requires admin approval; fire-and-forget.',
+      'Wire an EXISTING third-party MCP server into YOUR per-agent runtime config — you must already know the exact `command` + `args` to invoke it (e.g. command "npx", args ["-y", "@modelcontextprotocol/server-github"]). Requires admin approval; fire-and-forget.',
     inputSchema: {
       type: 'object' as const,
       properties: {
