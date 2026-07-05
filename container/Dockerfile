@@ -124,16 +124,19 @@ USER node
 WORKDIR /workspace/group
 
 # ---- Pre-warm the npx cache for the pinned MCP servers -----------------------
-# The agent spawns Exa + Firecrawl MCP via `npx -y <pkg>@<ver>` (src/base-profile.ts).
-# A fresh (ephemeral) container otherwise DOWNLOADS them on every cold start — the
-# dominant post-idle cold-start latency. Baking the EXACT pinned specs into the npx
-# cache, as the runtime `node` user (HOME=/home/node), makes the runtime `npx -y`
-# a cache hit instead of a network fetch. `</dev/null` makes the stdio MCP bin exit
-# immediately on EOF; `timeout` + `|| true` guarantee this best-effort step never
-# hangs or fails the build. KEEP THESE VERSIONS IN SYNC WITH base-profile.ts
-# (EXA_PKG / FIRECRAWL_PKG) — a stale version just falls back to a runtime download.
+# The agent spawns Exa + Firecrawl MCP via `npx -y <pkg>@<ver>` (src/base-profile.ts),
+# and the two global remote MCPs (ploy, crew-beverage) via the `mcp-remote` stdio<->HTTP
+# bridge (src/global-mcp.ts). A fresh (ephemeral) container otherwise DOWNLOADS them on
+# every cold start — the dominant post-idle cold-start latency. Baking the EXACT pinned
+# specs into the npx cache, as the runtime `node` user (HOME=/home/node), makes the
+# runtime `npx -y` a cache hit instead of a network fetch. `</dev/null` makes the stdio
+# MCP bin exit immediately on EOF; `timeout` + `|| true` guarantee this best-effort step
+# never hangs or fails the build. KEEP THESE VERSIONS IN SYNC WITH base-profile.ts
+# (EXA_PKG / FIRECRAWL_PKG) and global-mcp.ts (MCP_REMOTE_PKG) — a stale version just
+# falls back to a runtime download.
 RUN timeout 180 npx -y exa-mcp-server@3.2.1 </dev/null >/dev/null 2>&1 || true; \
-    timeout 180 npx -y firecrawl-mcp@3.21.0 </dev/null >/dev/null 2>&1 || true
+    timeout 180 npx -y firecrawl-mcp@3.21.0 </dev/null >/dev/null 2>&1 || true; \
+    timeout 180 npx -y mcp-remote@0.1.38 </dev/null >/dev/null 2>&1 || true
 
 # tini is PID 1, reaps zombies, forwards signals cleanly. entrypoint.sh does
 # `exec bun ...` so bun runs as tini's direct child.

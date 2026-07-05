@@ -23,6 +23,7 @@ import { applyLeaderWorkspaceMounts } from './leader-mounts.js';
 import { disallowedToolsForRole } from './leader-tools.js';
 import { applyAutoCompactWindow } from './context-window.js';
 import { applyProxyEnv, shouldBlockAnthropicForProxy } from './proxy-env.js';
+import { applyGlobalRemoteMcps } from './global-mcp.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -173,6 +174,19 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
     blocked.add('api.anthropic.com');
     config.blockedHosts = [...blocked];
   }
+
+  // Global remote MCPs (ploy, crew-beverage) — injected for EVERY agent, every spawn,
+  // key-gated on their own URL env vars (inert when unset). Bridged via mcp-remote
+  // since McpServerConfig is stdio-only; hostnames get appended to NO_PROXY so their
+  // traffic bypasses the onecli egress proxy. Idempotent (never overwrites an
+  // existing entry of the same name) and NOT persisted to the DB — recomputed fresh
+  // from the row's mcp_servers each spawn, so an existing agent picks it up on respawn.
+  const globalMcp = applyGlobalRemoteMcps(config.mcpServers, config.env, {
+    ploy: process.env.PLOY_MCP_URL,
+    crewBeverage: process.env.CREW_BEVERAGE_MCP_URL,
+  });
+  config.mcpServers = globalMcp.mcpServers ?? config.mcpServers;
+  config.env = globalMcp.env;
 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
