@@ -115,8 +115,11 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
-  it('text with no send-tool call produces no outbound messages (scratchpad only)', async () => {
-    insertMessage('m1', { sender: 'Alice', text: 'hello' }, { platformId: 'chan-1', channelType: 'discord' });
+  it('peer-lane text with no send-tool call produces no outbound messages (scratchpad only)', async () => {
+    // Peer ('agent') lane: relaxed delivery auto-delivers undelivered USER-lane
+    // text, so the "scratchpad only, nothing delivered" path now holds only for
+    // peer-directed turns — the loop nudges (a push, not an outbound row).
+    insertMessage('m1', { sender: 'Alice', text: 'hello' }, { platformId: 'chan-1', channelType: 'agent' });
 
     // Agent responds with text but never calls send_message — nothing is
     // delivered (and the loop nudges it; the nudge is a push, not an outbound row).
@@ -215,7 +218,10 @@ describe('poll loop — exchange hook (onExchangeComplete)', () => {
   });
 
   it('does not report the internal wrapping-retry nudge as a user prompt', async () => {
-    insertMessage('m1', { sender: 'Alice', text: 'wrap this later' }, { platformId: 'chan-1', channelType: 'discord' });
+    // Peer ('agent') lane: the send_message nudge (and thus this second turn) now
+    // only fires for peer-directed undelivered text — a user lane would auto-deliver
+    // the first turn and never nudge.
+    insertMessage('m1', { sender: 'Alice', text: 'wrap this later' }, { platformId: 'chan-1', channelType: 'agent' });
 
     let calls = 0;
     const provider = new HookedMockProvider({}, () => {

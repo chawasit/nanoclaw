@@ -537,6 +537,13 @@ export async function processQuery(
         // and did not itself deliver. The stream-wide suppression is gone; the
         // nudge is instead gated by the re-arming latch + the per-stream cap below.
         const undelivered = !deliveredThisTurn && scratchpad.length > 0 && !sleepSummaryComplete;
+        // Relaxed delivery: a turn on the single USER lane (a channel is present and
+        // it is NOT the 'agent' peer lane) that produced visible text but called no
+        // send tool is auto-relayed to the user below — a plain reply needs no
+        // send_message. Peer-directed ('agent') undelivered turns are NOT auto-
+        // relayed; they still nudge. A null channel (no routing) is treated as
+        // non-user, so it keeps the existing nudge path.
+        const isUserLane = routing.channelType != null && routing.channelType !== 'agent';
 
         if (!deliveredThisTurn && event.isError === true && event.text) {
           // Non-retryable error turn (e.g. a 403 billing_error) that delivered
@@ -551,9 +558,39 @@ export async function processQuery(
             status: 'error',
           });
           archivePrompts.shift();
+        } else if (undelivered && isUserLane) {
+          // Relaxed delivery: a plain assistant reply on the single user lane is
+          // delivered automatically — the agent no longer needs send_message for a
+          // normal user reply. Mirror deliverErrorResult's host-facing write (one
+          // synthetic user-directed row = the internal-stripped scratchpad), mark
+          // the exchange 'completed' so notifyExchangeComplete fires (as the error
+          // path does), and shift the archived prompt. Deliberately do NOT call
+          // recordDelivery(): this is a host write, and leaving the delivery tally
+          // untouched keeps the peer-nudge accounting clean. No nudge here.
+          log('Turn produced user-lane text with no send call — auto-delivering to the channel (relaxed delivery)');
+          writeMessageOut({
+            id: generateId(),
+            in_reply_to: routing.inReplyTo,
+            kind: 'chat',
+            platform_id: routing.platformId,
+            channel_type: routing.channelType,
+            thread_id: routing.threadId,
+            content: JSON.stringify({ text: scratchpad }),
+          });
+          notifyExchangeComplete(onExchangeComplete, {
+            prompt: archivePrompts[0] ?? initialPrompt,
+            result: event.text ?? '',
+            continuation: queryContinuation ?? initialContinuation,
+            status: 'completed',
+          });
+          archivePrompts.shift();
         } else {
+          // Reached only for non-error, non-auto-delivered turns: a peer-directed
+          // ('agent'/null-lane) undelivered turn (which nudges), or a delivered /
+          // empty / sleep-summary turn (which does not). `!isUserLane` is defensive
+          // — an undelivered user-lane turn was already handled above.
           const willNudge =
-            undelivered && !nudgedSinceLastDelivery && nudgeCount < MAX_NUDGES_PER_STREAM;
+            undelivered && !isUserLane && !nudgedSinceLastDelivery && nudgeCount < MAX_NUDGES_PER_STREAM;
           if (undelivered) {
             const why = willNudge
               ? ' — nudging'
