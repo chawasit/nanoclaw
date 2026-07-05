@@ -63,11 +63,13 @@ describe('send_message / send_file - content-keyed idempotency (CoS duplicate-se
       .run();
   }
 
-  it('first send is queued and the result names the resolved destination', async () => {
+  it('first send is queued and the result names the resolved destination (friendly name, not raw id)', async () => {
     seedChannelDest();
     const res = await sendMessage.handler({ to: 'owner', text: 'hi' });
     const text = (res.content[0] as { text: string }).text;
-    expect(text).toContain('queued for delivery to telegram:telegram:1030273932');
+    expect(text).toContain('queued for delivery to owner');
+    // The low-signal raw channel_type:platform_id tuple must NOT leak to the agent.
+    expect(text).not.toContain('telegram:telegram:1030273932');
     expect(text).not.toContain('Message sent');
   });
 
@@ -79,7 +81,8 @@ describe('send_message / send_file - content-keyed idempotency (CoS duplicate-se
     const res = await sendMessage.handler({ to: 'owner', text: 'morning digest' });
     const text = (res.content[0] as { text: string }).text;
     expect(text).toContain('skipped');
-    expect(text).toContain('telegram:telegram:1030273932');
+    expect(text).toContain('owner');
+    expect(text).not.toContain('telegram:telegram:1030273932');
     expect(text).toContain('already delivered');
 
     const after = getOutboundDb().prepare('SELECT COUNT(*) AS c FROM messages_out').get() as { c: number };
@@ -133,7 +136,8 @@ describe('send_file - content-keyed idempotency (the literal CoS bug path)', () 
     const r = await sendFile.handler({ to: 'owner', path: tmpFile, filename });
     const t = (r.content[0] as { text: string }).text;
     expect(t).toContain('skipped');
-    expect(t).toContain('telegram:telegram:1030273932');
+    expect(t).toContain('owner');
+    expect(t).not.toContain('telegram:telegram:1030273932');
     expect(t).toContain('already delivered');
 
     const after = getOutboundDb().prepare('SELECT COUNT(*) AS c FROM messages_out').get() as { c: number };

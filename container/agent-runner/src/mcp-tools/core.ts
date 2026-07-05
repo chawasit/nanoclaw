@@ -102,7 +102,11 @@ function resolveRouting(
 export const sendMessage: McpToolDefinition = {
   tool: {
     name: 'send_message',
-    description: 'Send a message to a named destination. If you have only one destination, you can omit `to`.',
+    description:
+      'Send a message to a named destination. If you have only one destination, you can omit `to`. ' +
+      'Example: send_message({ to: "family", text: "On my way." }). ' +
+      'Inbound messages you receive are tagged with a numeric id (e.g. <message id="42" from="family">…</message>); ' +
+      'that `#42` is the id used by edit_message / add_reaction, not by this tool.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -123,7 +127,6 @@ export const sendMessage: McpToolDefinition = {
     if ('error' in routing) return err(routing.error);
 
     const content = JSON.stringify({ text });
-    const dest = `${routing.channel_type}:${routing.platform_id}`;
 
     // Idempotency: if this exact content already went to this destination in
     // the last window, do NOT re-queue it. Tell the agent it is already sent so
@@ -141,7 +144,7 @@ export const sendMessage: McpToolDefinition = {
       recordDelivery();
       log(`send_message: SKIPPED duplicate → ${routing.resolvedName} (matches #${dup.seq})`);
       return ok(
-        `skipped — identical send to ${dest} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
+        `skipped — identical send to ${routing.resolvedName} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
       );
     }
 
@@ -158,7 +161,7 @@ export const sendMessage: McpToolDefinition = {
     recordDelivery();
 
     log(`send_message: #${seq} → ${routing.resolvedName}`);
-    return ok(`queued for delivery to ${dest} (id: ${seq})`);
+    return ok(`queued for delivery to ${routing.resolvedName} (id: ${seq})`);
   },
 };
 
@@ -190,7 +193,6 @@ export const sendFile: McpToolDefinition = {
     const id = generateId();
     const filename = (args.filename as string) || path.basename(resolvedPath);
     const content = JSON.stringify({ text: (args.text as string) || '', files: [filename] });
-    const dest = `${routing.channel_type}:${routing.platform_id}`;
 
     // Idempotency: identical (destination + content) within the window means
     // the same file was already queued — skip the re-copy + re-queue and tell
@@ -207,7 +209,7 @@ export const sendFile: McpToolDefinition = {
       recordDelivery();
       log(`send_file: SKIPPED duplicate → ${routing.resolvedName} (${filename}, matches #${dup.seq})`);
       return ok(
-        `skipped — identical send to ${dest} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
+        `skipped — identical send to ${routing.resolvedName} within ${dedupWindowLabel()} (already delivered, id: ${dup.seq}). No retry needed.`,
       );
     }
 
@@ -227,7 +229,7 @@ export const sendFile: McpToolDefinition = {
     recordDelivery();
 
     log(`send_file: ${id} (#${seq}) → ${routing.resolvedName} (${filename})`);
-    return ok(`queued for delivery to ${dest} (id: ${seq}, filename: ${filename})`);
+    return ok(`queued for delivery to ${routing.resolvedName} (id: ${seq}, filename: ${filename})`);
   },
 };
 

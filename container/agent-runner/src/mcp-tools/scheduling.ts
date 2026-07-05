@@ -161,7 +161,8 @@ export const listTasks: McpToolDefinition = {
 export const cancelTask: McpToolDefinition = {
   tool: {
     name: 'cancel_task',
-    description: 'Cancel a scheduled task.',
+    description:
+      'Cancel a scheduled task. Fire-and-forget: this returns immediately; if the taskId is unknown the failure is reported back later via a system message, not in this call\'s result.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -189,7 +190,8 @@ export const cancelTask: McpToolDefinition = {
 export const pauseTask: McpToolDefinition = {
   tool: {
     name: 'pause_task',
-    description: 'Pause a scheduled task. It will not run until resumed.',
+    description:
+      'Pause a scheduled task. It will not run until resumed. Fire-and-forget: this returns immediately; if the taskId is unknown the failure is reported back later via a system message, not in this call\'s result.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -216,7 +218,8 @@ export const pauseTask: McpToolDefinition = {
 export const resumeTask: McpToolDefinition = {
   tool: {
     name: 'resume_task',
-    description: 'Resume a paused task.',
+    description:
+      'Resume a paused task. Fire-and-forget: this returns immediately; if the taskId is unknown the failure is reported back later via a system message, not in this call\'s result.',
     inputSchema: {
       type: 'object' as const,
       properties: {

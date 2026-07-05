@@ -32,6 +32,25 @@ export function registerTools(tools: McpToolDefinition[]): void {
   }
 }
 
+/**
+ * Dispatch a tool call by name, guarding the handler so a thrown error becomes
+ * an actionable `isError` result the agent can read and correct — rather than
+ * propagating raw to the SDK (which surfaces as an opaque protocol error).
+ */
+export async function callTool(name: string, args: Record<string, unknown>) {
+  const tool = toolMap.get(name);
+  if (!tool) {
+    return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }] };
+  }
+  try {
+    return await tool.handler(args ?? {});
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    log(`Tool ${name} threw: ${message}`);
+    return { content: [{ type: 'text' as const, text: `Tool ${name} failed: ${message}` }], isError: true };
+  }
+}
+
 export async function startMcpServer(): Promise<void> {
   const server = new Server({ name: 'nanoclaw', version: '2.0.0' }, { capabilities: { tools: {} } });
 
@@ -41,11 +60,7 @@ export async function startMcpServer(): Promise<void> {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const tool = toolMap.get(name);
-    if (!tool) {
-      return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
-    }
-    return tool.handler(args ?? {});
+    return callTool(name, args ?? {});
   });
 
   const transport = new StdioServerTransport();

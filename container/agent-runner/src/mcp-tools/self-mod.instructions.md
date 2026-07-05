@@ -16,10 +16,10 @@ install_packages({ apt: ["ffmpeg"], npm: ["@xenova/transformers"], reason: "Audi
 
 ### MCP servers (`add_mcp_server`)
 
-Use **`add_mcp_server`** to add an MCP server to your configuration. Browse available servers at https://mcp.so — it's a curated directory of high-quality MCP servers. Most Node.js servers run via `pnpm dlx`, e.g.:
+Use **`add_mcp_server`** to add an MCP server to your configuration. Browse available servers at https://mcp.so — it's a curated directory of high-quality MCP servers. Most Node.js servers run via `npx -y` (matches how the baked-in exa/firecrawl servers launch; the `-y` skips the install prompt), e.g.:
 
 ```
-add_mcp_server({ name: "memory", command: "pnpm", args: ["dlx", "@modelcontextprotocol/server-memory"] })
+add_mcp_server({ name: "memory", command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"] })
 ```
 
 Do not ask the user to give you credentials or tell them how to create credentials (OAuth, API keys, etc.) — NEVER fabricate credential setup instructions. Credentials are handled by the OneCLI gateway. Use `"onecli-managed"` as the placeholder value for any credential env vars or config fields. After the MCP server is installed and the container restarts, load `/onecli-gateway` for the full credential-handling flow (connect URLs, stubs, error recovery).

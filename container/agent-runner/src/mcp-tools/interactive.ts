@@ -105,7 +105,7 @@ export const askUserQuestion: McpToolDefinition = {
       }),
     });
 
-    log(`ask_user_question: ${questionId} → "${question}" [${options.join(', ')}]`);
+    log(`ask_user_question: ${questionId} → "${question}" [${options.map((o) => o.label).join(', ')}]`);
 
     // Poll for response in inbound.db (host writes the response there)
     const deadline = Date.now() + timeout;
@@ -132,13 +132,45 @@ export const askUserQuestion: McpToolDefinition = {
 export const sendCard: McpToolDefinition = {
   tool: {
     name: 'send_card',
-    description: 'Send a structured card (interactive or display-only) to the current conversation.',
+    description:
+      'Send a structured card (interactive or display-only) to the current conversation. ' +
+      'Example: send_card({ card: { title: "Deploy ready", description: "Build #42 passed.", ' +
+      'actions: [{ label: "Ship it", value: "ship" }, { label: "Hold", value: "hold" }] }, ' +
+      'fallbackText: "Deploy ready — reply ship or hold." }).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         card: {
           type: 'object',
-          description: 'Card structure with title, description, and optional children/actions',
+          description: 'The card to render. `title` is required; `description`, `children`, and `actions` are optional.',
+          properties: {
+            title: { type: 'string', description: 'Card heading' },
+            description: { type: 'string', description: 'Body text under the title' },
+            children: {
+              type: 'array',
+              description: 'Optional nested display rows (e.g. label/value pairs).',
+              items: {
+                type: 'object',
+                properties: {
+                  label: { type: 'string' },
+                  value: { type: 'string' },
+                },
+              },
+            },
+            actions: {
+              type: 'array',
+              description: 'Optional interactive buttons. Each is { label, value } — label is shown, value is returned on click.',
+              items: {
+                type: 'object',
+                properties: {
+                  label: { type: 'string' },
+                  value: { type: 'string' },
+                },
+                required: ['label'],
+              },
+            },
+          },
+          required: ['title'],
         },
         fallbackText: { type: 'string', description: 'Text fallback for platforms without card support' },
       },
