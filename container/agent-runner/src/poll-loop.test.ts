@@ -902,3 +902,66 @@ describe('LIVE Circle shape: NULL inbound routing + cli/local session lane (bug 
     expect(out[0].platform_id).toBe('local');
   });
 });
+
+/**
+ * Empty-result fallback (feat/deliver-empty-result-text): when the claude
+ * provider surfaces the accumulated MAIN-agent text as `event.text` for a turn
+ * whose SDK `result` was empty (background-tool launch), the poll-loop's
+ * relaxed-delivery branch must auto-deliver it on the USER lane — while the
+ * SAME exemptions that suppress the nudge (internal tags, the sleep-summary
+ * marker) must also suppress auto-delivery. These drive the poll-loop directly
+ * with `{type:'result', text}` (exactly what translateEvents now emits for the
+ * fallback), proving the blast-radius guard holds on the user lane.
+ */
+describe('empty-result fallback auto-delivery (user lane)', () => {
+  function oneShot(text: string | null) {
+    const pushes: string[] = [];
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 'sess-1' } as ProviderEvent;
+      yield { type: 'result', text } as ProviderEvent;
+    }
+    return {
+      pushes,
+      query: { push: (m: string) => { pushes.push(m); }, end: () => {}, events: events(), abort: () => {} } as AgentQuery,
+    };
+  }
+  const USER_ROUTING = { platformId: 'local', channelType: 'cli', threadId: null, inReplyTo: 'm1' };
+
+  it('auto-delivers fallback narration text to the user lane (Workflow-launch case)', async () => {
+    seedSessionRouting('cli', 'local');
+    const { query, pushes } = oneShot('Workflow launched! Watching progress and will report back.');
+    await processQuery(query, USER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('Workflow launched! Watching progress and will report back.');
+    expect(out[0].channel_type).toBe('cli');
+    expect(out[0].platform_id).toBe('local');
+    // A plain user-lane reply auto-delivers; it is not nudged.
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('does NOT auto-deliver a [[SLEEP_SUMMARY_COMPLETE]] marker turn on the user lane (exemption holds)', async () => {
+    seedSessionRouting('cli', 'local');
+    const { query, pushes } = oneShot('Memory consolidated and handoff.md written.\n[[SLEEP_SUMMARY_COMPLETE]]');
+    await processQuery(query, USER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    // The sleep-summary marker is an intentional delivery-free turn — no leak.
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('does NOT auto-deliver an <internal>-only fallback on the user lane (exemption holds)', async () => {
+    seedSessionRouting('cli', 'local');
+    const { query, pushes } = oneShot('<internal>scratch reasoning, no user reply this turn</internal>');
+    await processQuery(query, USER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('a null-text (genuinely empty) turn delivers nothing and does not nudge', async () => {
+    seedSessionRouting('cli', 'local');
+    const { query, pushes } = oneShot(null);
+    await processQuery(query, USER_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
+});
