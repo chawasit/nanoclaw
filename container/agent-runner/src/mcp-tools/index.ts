@@ -7,7 +7,6 @@
  */
 import './core.js';
 import './scheduling.js';
-import './interactive.js';
 import './agents.js';
 import './self-mod.js';
 import './tasklist.js';
