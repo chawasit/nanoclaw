@@ -75,6 +75,74 @@ interface SDKUserMessage {
   session_id: string;
 }
 
+// ── Turn-text fallback (deliver empty-result user text) ──
+//
+// The delivered reply text is normally sourced from the SDK `result` message's
+// `result` string. But when a turn's final assistant text sits in the SAME
+// assistant message as a background-tool `tool_use` (e.g. the Workflow tool,
+// which returns an immediate `async_launched` tool_result and the turn then
+// ends), `result.result` comes back EMPTY — the narration is lost. To recover
+// it we accumulate the MAIN agent's own assistant text across the turn and fall
+// back to it when the SDK result is empty. Sidechain/subagent messages
+// (`parent_tool_use_id != null`) are DELIBERATELY excluded so a running
+// background workflow's subagent chatter never leaks to the user lane.
+
+/**
+ * Concatenated text blocks of a MAIN-agent assistant message — one whose
+ * `parent_tool_use_id` is null. Any other message (a subagent sidechain
+ * message, a non-assistant message, a malformed shape) returns ''.
+ */
+export function mainAgentAssistantText(message: unknown): string {
+  const m = message as {
+    type?: string;
+    parent_tool_use_id?: string | null;
+    message?: { content?: Array<{ type?: string; text?: string }> };
+  };
+  if (m?.type !== 'assistant' || m.parent_tool_use_id != null) return '';
+  const blocks = m.message?.content;
+  if (!Array.isArray(blocks)) return '';
+  return blocks
+    .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+    .join('');
+}
+
+/**
+ * The text a completed turn surfaces to the poll-loop. Prefer the SDK-provided
+ * string (its `result` summary or joined error text); when that is empty — the
+ * background-tool-launch case above — fall back to the accumulated main-agent
+ * text so the narration still reaches the user. Returns null when neither has
+ * content. A NON-empty SDK result always wins (regression guard).
+ */
+export function resolveTurnText(sdkText: string | null, accumulatedMainText: string): string | null {
+  if (sdkText && sdkText.length > 0) return sdkText;
+  const fallback = accumulatedMainText.trim();
+  return fallback.length > 0 ? fallback : null;
+}
+
+/**
+ * Stateful per-turn accumulator used by `translateEvents`. `observe` folds in
+ * each SDK message (main-agent text only); `resolve` returns the surfaced turn
+ * text (SDK result, else accumulated fallback) and RESETS for the next turn so
+ * turn N's text can never leak into turn N+1.
+ */
+export function createTurnTextAccumulator(): {
+  observe(message: unknown): void;
+  resolve(sdkText: string | null): string | null;
+} {
+  let mainAgentText = '';
+  return {
+    observe(message: unknown): void {
+      mainAgentText += mainAgentAssistantText(message);
+    },
+    resolve(sdkText: string | null): string | null {
+      const text = resolveTurnText(sdkText, mainAgentText);
+      mainAgentText = '';
+      return text;
+    },
+  };
+}
+
 /**
  * Push-based async iterable for streaming user messages to the Claude SDK.
  */
@@ -432,9 +500,17 @@ export class ClaudeProvider implements AgentProvider {
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
+      // Accumulates the MAIN agent's own assistant text across the turn so an
+      // empty SDK `result` (final text co-located with a background-tool
+      // tool_use) can still be surfaced/delivered. Reset per turn by resolve().
+      const turnText = createTurnTextAccumulator();
       for await (const message of sdkResult) {
         if (aborted) return;
         messageCount++;
+
+        // Fold every message into the turn accumulator; only MAIN-agent
+        // (parent_tool_use_id === null) assistant text is actually kept.
+        turnText.observe(message);
 
         // Yield activity for every SDK event so the poll loop knows the agent is working
         yield { type: 'activity' };
@@ -446,9 +522,15 @@ export class ClaudeProvider implements AgentProvider {
           // (e.g. a non-retryable 403 billing_error) carry their message in
           // `errors[]` instead. Surface either so the poll-loop can deliver a
           // billing/quota notice to the user rather than dropping the turn.
+          // When BOTH are empty (a background-tool launch that ends the turn
+          // with no result text), fall back to the accumulated main-agent text
+          // so the narration is auto-delivered instead of silently lost. The
+          // poll-loop's existing exemptions (stripInternalTags, the
+          // [[SLEEP_SUMMARY_COMPLETE]] marker, isUserLane) all key off this
+          // `text`, so the fallback can never leak internal/marker content.
           const m = message as { result?: string; is_error?: boolean; errors?: string[] };
-          const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-          yield { type: 'result', text, isError: m.is_error === true };
+          const sdkText = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
+          yield { type: 'result', text: turnText.resolve(sdkText), isError: m.is_error === true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {
