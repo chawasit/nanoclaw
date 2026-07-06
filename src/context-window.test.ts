@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { autoCompactWindowForModel, applyAutoCompactWindow } from './context-window.js';
 
 describe('autoCompactWindowForModel', () => {
-  it('elevates glm to 700K and minimax to 300K', () => {
+  it('elevates glm to 700K, minimax to 300K, qwen to 229376 (256K - 32K)', () => {
     assert.equal(autoCompactWindowForModel('glm-5.2', undefined), '700000');
     assert.equal(autoCompactWindowForModel('minimax-m3', undefined), '300000');
+    assert.equal(autoCompactWindowForModel('qwen3.6-35b', undefined), '229376');
   });
   it('leaves local gemma / claude / unknown undefined (165K default downstream)', () => {
     assert.equal(autoCompactWindowForModel('unsloth/gemma-4-26B-A4B-it', undefined), undefined);

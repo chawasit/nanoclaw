@@ -20,6 +20,10 @@
 export const AUTO_COMPACT_WINDOW: Readonly<Record<string, string>> = {
   glm: '700000',
   minimax: '300000',
+  // qwen3.x is served locally on ampere at 256K ctx/slot (llama.cpp -c 1280000 / 5
+  // slots). Window = maxContext - 32K headroom = 262144 - 32768 = 229376. Unlike
+  // gemma (below), qwen holds a large window without thrashing. dev-log/0212.
+  qwen: '229376',
 };
 
 /** Window (tokens) for a model id, or undefined to keep the 165K agent-runner default. */
@@ -28,6 +32,7 @@ export function autoCompactWindowForModel(model: string | undefined, explicit?: 
   const m = (model ?? '').toLowerCase();
   if (m.includes('glm')) return AUTO_COMPACT_WINDOW.glm;
   if (m.includes('minimax')) return AUTO_COMPACT_WINDOW.minimax;
+  if (m.includes('qwen')) return AUTO_COMPACT_WINDOW.qwen;
   return undefined; // gemma / local / claude / unknown -> 165K default downstream
 }
 
