@@ -612,6 +612,25 @@ export async function processQuery(
             status: 'completed',
           });
           archivePrompts.shift();
+        } else if (deliveredThisTurn && isUserLane && scratchpad.length > 500) {
+          // Remainder delivery: the agent called send_message this turn (typically
+          // a short preamble like "I'll send the full report next") but then ended
+          // the turn with a SUBSTANTIAL unsent result text (the actual report body).
+          // Without this branch, the body is silently dropped because
+          // `deliveredThisTurn === true` marks the turn as "already delivered."
+          // The 500-char threshold avoids double-delivering short echoes/summaries
+          // that naturally accompany a send_message — only a genuinely large unsent
+          // remainder triggers a follow-up delivery. dev-log/0217.
+          log(`Turn delivered via send_message but left ${scratchpad.length} chars unsent — auto-delivering remainder`);
+          writeMessageOut({
+            id: generateId(),
+            in_reply_to: routing.inReplyTo,
+            kind: 'chat',
+            platform_id: sessionRouting.platform_id,
+            channel_type: sessionRouting.channel_type,
+            thread_id: sessionRouting.thread_id,
+            content: JSON.stringify({ text: scratchpad }),
+          });
         } else {
           // Reached only for non-error, non-auto-delivered turns: a peer-directed
           // ('agent'/null-lane) undelivered turn (which nudges), or a delivered /
