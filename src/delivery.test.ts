@@ -194,6 +194,47 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
     expect(delivered.has('out-flaky')).toBe(true);
   });
 
+  it('does NOT mark a missing-routing message delivered — throws into the retry → mark-failed path', async () => {
+    // Regression: a user-lane row with NULL channel_type/platform_id used to
+    // `return undefined`, which the caller recorded as markDelivered — a
+    // silent permanent loss (the message never reached the user, yet the row
+    // showed "delivered"). It must now throw, so it retries and is eventually
+    // marked FAILED, never masked as success.
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    // Insert an outbound row with no routing fields (channel_type/platform_id NULL).
+    const db = new Database(outboundDbPath('ag-1', session.id));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES (?, datetime('now'), 'chat', NULL, NULL, ?)`,
+    ).run('out-noroute', JSON.stringify({ text: 'lost?' }));
+    db.close();
+
+    let callCount = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        callCount++;
+        return 'plat-should-not-fire';
+      },
+    });
+
+    // Attempt 1 — throws before reaching the adapter; NOT terminal yet.
+    await deliverSessionMessages(session);
+    expect(callCount).toBe(0);
+    let inDb = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(inDb).has('out-noroute')).toBe(false); // still retrying, not marked delivered
+    inDb.close();
+
+    // Attempts 2 & 3 — after MAX_DELIVERY_ATTEMPTS it is marked FAILED (terminal),
+    // recording the loss instead of masking it as a delivered success.
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    expect(callCount).toBe(0);
+    inDb = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(inDb).has('out-noroute')).toBe(true); // now terminal (failed)
+    inDb.close();
+  });
+
   it('clears attempt counter on successful delivery', async () => {
     seedAgentAndChannel();
     const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');

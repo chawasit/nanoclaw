@@ -249,8 +249,12 @@ async function deliverMessage(
   inDb: Database.Database,
 ): Promise<string | undefined> {
   if (!deliveryAdapter) {
-    log.warn('No delivery adapter configured, dropping message', { id: msg.id });
-    return;
+    // The adapter is set at boot (index.ts) BEFORE the delivery polls start,
+    // so a null adapter here is never a startup race — it's a real defect
+    // state. Throw (not silent return): a return would fall through to
+    // markDelivered and permanently lose the message; throwing routes it into
+    // the retry → mark-failed path, same as the other throws below.
+    throw new Error(`no delivery adapter configured — cannot deliver message ${msg.id}`);
   }
 
   const content = JSON.parse(msg.content);
@@ -356,8 +360,11 @@ async function deliverMessage(
 
   // Channel delivery
   if (!msg.channel_type || !msg.platform_id) {
-    log.warn('Message missing routing fields', { id: msg.id });
-    return;
+    // Throw (not silent return): a user-lane message with no routing fields
+    // can't be delivered, and a return would fall through to markDelivered and
+    // permanently lose it. Throwing routes it into the retry → mark-failed
+    // path so the loss is recorded, not masked as a success.
+    throw new Error(`message missing routing fields (channel_type/platform_id) — cannot deliver ${msg.id}`);
   }
 
   // Read file attachments from outbox if the content declares files.
